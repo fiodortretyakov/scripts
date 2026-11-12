@@ -41,8 +41,8 @@ if ($Sweep -and $Sweep -notin 'on', 'off') { throw "-Sweep takes 'on' or 'off'" 
 
 $ErrorActionPreference = 'Stop'
 
-# Fires every two minutes through a detached wscript wrapper, so the scheduler's
-# MultipleInstances setting never sees this process and a stalled run just gets relaunched.
+# Fires every five minutes. A run that outlives its task (stopped at the time limit) is not tracked by the
+# scheduler's MultipleInstances setting, so without this lock a stalled run would just get relaunched.
 if (-not ($Show -or $Calibrate -ge 0 -or $SweepNow)) {
     . (Join-Path $PSScriptRoot 'single-instance.ps1')
     if (-not (Enter-SingleInstance 'auto-brightness')) { return }

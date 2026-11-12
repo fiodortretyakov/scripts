@@ -8,7 +8,7 @@ library location are set at the top of each script.
 | Script | What it does |
 |---|---|
 | `auto-brightness.ps1` | Sets the G95NC brightness over DDC/CI from the laptop's ambient light sensor (smoothed, with a calibration curve). Windows PowerShell 5.1. |
-| `auto-brightness-hidden.vbs` | Runs `auto-brightness.ps1` from Task Scheduler without a window. |
+| `run-hidden.ps1` | Runs a program from Task Scheduler with no window (`conhost --headless`) and passes its exit code on. |
 | `screen-dim.ps1` | Software dimming per display through the GDI gamma ramp. |
 | `pc.ps1` | One entry point for the above: status, display profiles, charger health, scheduled tasks. |
 | `netusage-hourly.ps1` | Network usage per app and per hour from the Windows data-usage store. Windows PowerShell 5.1. |
