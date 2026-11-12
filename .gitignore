@@ -1,0 +1,20 @@
+# Allowlist. This folder also holds private scripts that must never be published, so everything is ignored
+# by default and only the files named below are part of the public repository.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/auto-brightness.ps1
+!/auto-brightness-hidden.vbs
+!/melonloader-portable-net6.ps1
+!/netusage-hourly.ps1
+!/pc.ps1
+!/python3.bat
+!/risen_focus_text_fix.py
+!/risen_hud_center.py
+!/screen-dim.ps1
+!/single-instance.ps1
+!/tunic_aspect.py
+!/ide-reload-extension/
+!/games/
+__pycache__/

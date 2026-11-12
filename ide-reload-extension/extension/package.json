@@ -1,0 +1,10 @@
+{
+  "name": "reload-on-request",
+  "displayName": "Reload on request",
+  "description": "Runs Developer: Reload Window when D:\\bin\\auto-brightness.ps1 requests it after the IDE file watcher died.",
+  "publisher": "fiodo",
+  "version": "1.0.0",
+  "engines": { "vscode": "^1.90.0" },
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js"
+}
