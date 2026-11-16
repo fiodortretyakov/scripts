@@ -16,6 +16,11 @@ library location are set at the top of each script.
 | `python3.bat` | `python3` shim for cmd and PowerShell. |
 | `ide-reload-extension/` | VS Code extension that reloads the window when `auto-brightness.ps1` requests it. |
 
+## Claude Code
+| Script | What it does |
+|---|---|
+| `claude-subagent-model.ps1` | PreToolUse hook: refuses a subagent call that does not name its model and effort, so Claude picks both for each task. Setup in the script header. |
+
 ## Games
 | Script | What it does |
 |---|---|
