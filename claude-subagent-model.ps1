@@ -9,7 +9,7 @@ It rewrites nothing on purpose: in auto mode the classifier refuses a call whose
 
 Setup, in the Claude Code user settings.json:
   "hooks": { "PreToolUse": [ { "matcher": "Agent|Task", "hooks": [ { "type": "command",
-    "command": "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    "command": "pwsh",
     "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", "D:\\bin\\claude-subagent-model.ps1"],
     "timeout": 15 } ] } ] }
 and a CLAUDE.md line such as: "Every Agent call names model and effort: haiku low for lookups; sonnet low or medium
