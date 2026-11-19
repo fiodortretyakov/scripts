@@ -1,0 +1,23 @@
+{
+  "name": "pwsh-tuned",
+  "version": "1.0.0",
+  "description": "PowerShellEditorServices from the VS Code PowerShell extension, analyzer errors only",
+  "lspServers": {
+    "powershell": {
+      "command": "pwsh",
+      "args": ["-NoLogo", "-NoProfile", "-File", "${CLAUDE_PLUGIN_ROOT}/start-pses.ps1"],
+      "extensionToLanguage": { ".ps1": "powershell", ".psm1": "powershell", ".psd1": "powershell" },
+      "startupTimeout": 60000,
+      "initializationOptions": { "enableProfileLoading": false },
+      "settings": {
+        "powershell": {
+          "analyzeOpenDocumentsOnly": true,
+          "scriptAnalysis": {
+            "enable": true,
+            "settingsPath": "${CLAUDE_PLUGIN_ROOT}/PSScriptAnalyzerSettings.psd1"
+          }
+        }
+      }
+    }
+  }
+}

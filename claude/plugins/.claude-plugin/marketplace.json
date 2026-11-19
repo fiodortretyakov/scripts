@@ -1,0 +1,16 @@
+{
+  "name": "local",
+  "owner": { "name": "local" },
+  "plugins": [
+    {
+      "name": "gopls-tuned",
+      "source": "./gopls-tuned",
+      "description": "gopls with -tags=testing and GOMEMLIMIT=2GiB"
+    },
+    {
+      "name": "pwsh-tuned",
+      "source": "./pwsh-tuned",
+      "description": "PowerShellEditorServices from the VS Code PowerShell extension, analyzer errors only"
+    }
+  ]
+}

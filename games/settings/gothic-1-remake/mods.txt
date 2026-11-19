@@ -1,0 +1,79 @@
+Gothic 1 Remake - installed mods (recipe; archives are re-downloadable, exact files + SHA-256 in ..\removed-recreatable.tsv)
+Game: Steam app 1297900. Paths below are relative to "steamapps\common\Gothic 1 Remake\G1R".
+
+Nexus id  Mod (file)                                   Install to                                   Hand edits (copies in mod-edits\)
+524       UE4SS - AngelScript Fix v0.4 (G1R fork)       Binaries\Win64 (dwmapi.dll + ue4ss\)         none; GitHub serioux1337/G1R-RE-UE4SS release v0.4, G1R-UE4SS.zip (its DevModsBackup folder deleted 14 Oct). NOT stock UE4SS (86): wrong offsets, crashed 13 Oct
+          UE4SS built-ins DELETED 19 Oct: BPModLoaderMod + BPML_GenericFunctions (no Blueprint/LogicMods mods left; mods.txt lines removed).
+          A future Blueprint mod needs them back from the fork zip (G1R-UE4SS.zip v0.4). CheatManagerEnablerMod stays.
+          30 Oct, GAME 1.1 exits at start when a module named UE4SS.dll is loaded -> ue4ss\UE4SS.dll RENAMED RE4SS.dll and
+          dwmapi.dll patched 'U'->'R' at 0x9080 (ASCII) + 0x90A8 (UTF-16). Every native mod must import RE4SS.dll too.
+          Copies: mod-edits\UE4SS-524-dwmapi-RE4SS.dll; mod-edits\g1r_ue4ss_rename.py <Win64> apply|revert redoes or undoes
+          it from the stock files (checks exact bytes first). A fresh v0.4 zip or a reinstalled UncapTeach needs "apply" again
+          (Steam verify does not touch these files: they are not in the depot).
+39        No Intro (with new game cutscene) 1.1         Content\Movies (5 empty .bk2)                none
+323       G1R MoreSpawns Chapter Progression 12         Binaries\Win64\ue4ss\Mods\G1R_MoreSpawns     none
+566       G1R UncapTeach 1.0.1 (.rar, Windows tar)      ...\ue4ss\Mods\G1R_UncapTeach                REINSTALLED 19 Oct (New Balance gone). ini = mod-edits\G1R_UncapTeach.ini
+          (Str/Dex/Mana max 200), scripts\main.lua = mod-edits\G1R_UncapTeach-main-no-modmenu.lua. Archive SHA-256 starts 634DEFC44571BFB0.
+          30 Oct: dlls\main.dll import name UE4SS.dll -> RE4SS.dll (0x25EE6 'U'->'R') = mod-edits\G1R_UncapTeach-main-RE4SS.dll.
+53        Highlight All Nearby Items 4.2.0              DELETED 14 Oct, NEVER reinstall: after every new item it runs 3 FindAllOf scans (items, corpses, chests) within 2 s = same crash class as 232
+446       SpellQuickUseEnabler 1.0                      DELETED 19 Oct at his request (quick-slot cross does the job); edited lua copy deleted too
+233       ContinuousMining 2.1.0                        DELETED 19 Oct at his request (a warder rarely mines); edited lua copy deleted too
+100       Show Item Base Value 1.0.2                    DELETED 20 Oct at his request
+541       Jump With Weapons 1.0 - DELETED 20 Oct at his request (archive too). History:
+          Jump With Weapons 1.0 (.7z "541 2")           ...\ue4ss\Mods\JumpWithWeapons               REINSTALLED 19 Oct (New Balance gone). config.ini default: B with a bow,
+          LT+B with melee, keyboard Space. C++: polls IsInputKeyDown/WasInputKeyJustPressed via ProcessEvent; no object search. SHA-256 starts 11E612CE989EC717.
+115       CenteredDialog 0.9 + CenteredHUDV2 0.9        Content\Paks\~mods                           none
+          30 Oct: CenteredHUDV2 (zCenteredHUD_P.*) DELETED at his request: on game 1.1 it crashed the async loading thread
+          while his save loaded (its June-cooked W_Hotbar no longer matches 1.1's reworked hotbar). Reinstall only a version
+          marked for 1.1. CenteredDialog (zCenteredDialog_P.*) DELETED too, 30 Oct, his "remove for now" (same stale-cook risk).
+          Both gone FOR GOOD (his 30 Oct: "I am fine without them - less mods better"). Never reinstall.
+
+526       G1R PickPocketExp 1.0.5 (.rar)              REMOVED 14 Oct (background loops while not stealing; he wants zero performance cost)
+          (UncapTeach: scripts\main.lua = mod-edits\G1R_UncapTeach-main-no-modmenu.lua; highlighter ini: reassertMs=2000)
+452       QuickBites 1.1.1 + 471 PleasureLib 0.5.2 - DELETED 30 Oct at his request, NEVER reinstall ("remove forever"); folders and the
+          edited main.lua copy deleted. History: QuickBites needed PleasureLib as a neighbouring folder; its main.lua added fried meat
+          (15 Oct: + fried meat Mutton_01/02, grilled scavenger, white meat, sausage, bread, cheese, rice, Seaforest brew; once at startup)
+32        PutAwayTorch Redux 1.0.7                    DELETED 28 Oct, NEVER reinstall ("I don't like it"). The 26 Oct crash (loading screen, game ability
+          system, null write 0x30) came ~80 s after the mod logged two failed native put-aways. Steam Input M1 -> T now does nothing.
+
+14 October 2026 (rules: nothing that overrides the Centered HUD/Dialog assets, nothing with a performance cost):
+657       New Balance - DELETED FOR GOOD 19 Oct (he dislikes 0.37's Gothic II training costs; no switch for them). Original Script\ and
+          Story\Cache\ files restored (SHA-256 verified), paks + UE4SS folder + rollback copy deleted. Never reinstall. History of the row:
+          New Balance 0.37.67 (19 Oct; STRICTLY Build83_CL174209) zip carries G1R\ paths: extract to game root   replaces Script\PrecompiledScript_Shipping.Cache AND
+          Story\Cache\AlkimiaLocalization_00000000.lcache (both originals in D:\games\backups\g1r, README there; 0.36.55 rollback copy there too); Steam verify/update undoes it.
+          0.37 adds GothicRemake_NewBalance_Tagi_P.pak, unlimited stacking (except rings) and a DLL that now imports FindAllOf.
+          ue4ss\Mods\GothicRemake_NewBalance\NewBalance.ini: name_colors=0 (he dislikes NPC names coloured by attitude; also in the game menu)
+581       Alternative Style for Bar Numbers v1          DELETED 14 Oct (health bar vanished with it + Centered HUD)
+583       Dialogue and Subtitle Styles v1               DELETED 19 Oct at his request (OverheadNoBG pak was the last part).
+          (was: ONLY OverheadNoBG; the "dialogue subtitles" variants override W_ConversationMain = CenteredDialog.)
+          Responses_WithBrownBG_WithIcon DELETED 15 Oct: its TS_DialogueChoice/TS_BubbleDialogue text styles = the dialogue fonts he dislikes
+593       Bigger Centered Books v1                      DELETED 19 Oct at his request
+598       Alternative Item Tooltip Layout v1            DELETED 19 Oct at his request (Shtung_ImprovedItemTooltips_P.*)
+632       Tidy Colony Map v1 - DELETED 30 Oct, his "remove for now" (cooked September for game 1.0; same crash risk as
+          Centered HUD on 1.1). Gone FOR GOOD ("less mods better"); never reinstall. Content\Paks\~mods is empty.
+592       Skip Death Screen 1.0                         ...\ue4ss\Mods\SkipDeathScreen               folder renamed from "Skip DeathScreen"; Scripts\config.lua DEBUG_LOGGING=false
+232       Always Visible Hotbar 1.5 (script v16)        DELETED 19 Oct (was disabled since 15 Oct): caused all three 14 Oct crashes. Its 200 ms timer runs FindAllOf
+          object searches; the UE4SS fork's search reads objects the engine is freeing (UE4SS.dll+0x35F45E)
+407       Hotbars 0.9.5 (radial rune wheel)           DELETED 15 Oct after he tried it (files, HotbarsModSave.sav and the archive); vanilla LB layout is back.
+207       Change Stack Size 1.0.4 - DELETED 30 Oct at his request (1.0.4 does not load on game 1.1; 2.0.0 runs on the official
+          mod system, which stops achievements and has no Ammo blacklist). Stacks already above the vanilla limit: behaviour unverified. History:
+207       Change Stack Size 1.0.4 (zip carries G1R\)  ...\ue4ss\Mods\G1R_ChangeStackSizeNative     REINSTALLED 19 Oct (New Balance gone); same zip as before (0174DF3E...), ini default.
+          (was: TargetMaxStack=999, blacklist Ring). 15 Oct. C++: engine-tick batch patcher of item CDOs
+          (m_MaxStack) with FindAllOf in the main menu + one pass 6 s into play if needed, bounded retries; no timer afterwards.
+          Zip SHA-256 0174DF3E976F3F4E02B2839279D07176AFC6E5AF2FD495F17501FFA6279E6331. ReStack sub-mod (O key) not in this zip, not installed.
+216       G1R Console Tools 1.9.1 - DELETED 19 Oct with ConsoleEnablerMod, CheatManagerEnablerMod (mods.txt now empty) and my
+          G1R_SpawnDiggers, after the warder quest worked. History of the row:
+          G1R Console Tools 1.9.1 (zip carries G1R\)  ...\ue4ss\Mods\G1RConsoleTools + ConsoleEnablerMod (from the fork zip's dev mods, + enabled.txt)
+          18 Oct, to fix the warder quest after he killed all diggers. _config.txt: startup hotbar/sprint/jump and ALL hotkeys commented out
+          (console commands only; console = F10 or ~). Commands only on demand; spawn menu delays only while open. Remove both when done.
+local     G1R_SpawnDiggers (MY mod, 19 Oct)            ...\ue4ss\Mods\G1R_SpawnDiggers              console command `diggers [count] [first]` / `diggers crowd N`: spawns the 43
+          nameless OC_VLK_DiggerNN via /Script/G1R.Default__SpawningBlueprintUtils:SpawnAIAgent around the player (warder quest fix). No timers.
+          Source = its Scripts\main.lua (generated from Console Tools' readme\spawnai.txt). Remove with Console Tools when the quest is done.
+Not installed: 643 Loot Highlight (game-thread loop every 33 ms; the 53 highlighter is lighter: 500 ms + 100 ms pad poll),
+645 Alternative UI Texts (English text only; the game runs in Russian).
+
+Never reinstall: 314 Improved Object Highlighter (crashes at load on build CL174209).
+Rule (15 Oct): no UE4SS mod that calls FindAllOf/FindFirstOf/ForEachUObject on a timer; one-off searches at load or on a key press are fine.
+Rejected 15 Oct: 125 CompassUI 1.0.11 (100 ms ExecuteWithDelay loop = UE4SS async thread, FindFirstOf/FindAllOf, widget edits off
+the game thread) and 91 InGameClock 1.7 (1 s ExecuteWithDelay loop, FindFirstOf("GameTimeSubsystem") every tick, SetText off the game thread).
+Config: Saved\Config\Windows (golden in history\) is mirrored daily by sync-loose-config.ps1 into Config\.

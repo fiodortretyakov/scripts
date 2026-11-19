@@ -1,0 +1,91 @@
+{
+  "name": "gopls-tuned",
+  "version": "1.1.0",
+  "description": "gopls with -tags=testing, GOMEMLIMIT=2GiB and style analyzers off",
+  "lspServers": {
+    "gopls": {
+      "command": "gopls",
+      "extensionToLanguage": {
+        ".go": "go"
+      },
+      "env": {
+        "GOMEMLIMIT": "2GiB"
+      },
+      "initializationOptions": {
+        "buildFlags": [
+          "-tags=testing"
+        ],
+        "analyses": {
+          "any": false,
+          "atomictypes": false,
+          "bloop": false,
+          "deprecated": false,
+          "embedlit": false,
+          "errorsastype": false,
+          "fmtappendf": false,
+          "forvar": false,
+          "infertypeargs": false,
+          "inline": false,
+          "maprange": false,
+          "mapsloop": false,
+          "minmax": false,
+          "newexpr": false,
+          "omitzero": false,
+          "plusbuild": false,
+          "QF1002": false,
+          "QF1003": false,
+          "QF1004": false,
+          "QF1009": false,
+          "QF1010": false,
+          "QF1012": false,
+          "rangeint": false,
+          "reflecttypeassert": false,
+          "reflecttypefor": false,
+          "S1000": false,
+          "S1001": false,
+          "S1003": false,
+          "S1004": false,
+          "S1007": false,
+          "S1009": false,
+          "S1010": false,
+          "S1012": false,
+          "S1017": false,
+          "S1018": false,
+          "S1019": false,
+          "S1020": false,
+          "S1023": false,
+          "S1024": false,
+          "S1028": false,
+          "S1030": false,
+          "S1031": false,
+          "S1032": false,
+          "S1033": false,
+          "S1034": false,
+          "S1035": false,
+          "S1036": false,
+          "S1037": false,
+          "S1038": false,
+          "S1039": false,
+          "S1040": false,
+          "simplifycompositelit": false,
+          "simplifyrange": false,
+          "simplifyslice": false,
+          "slicesbackward": false,
+          "slicesclip": false,
+          "slicescontains": false,
+          "slicessort": false,
+          "stditerators": false,
+          "stringsbuilder": false,
+          "stringscut": false,
+          "stringscutprefix": false,
+          "stringsseq": false,
+          "testingcontext": false,
+          "unusedfunc": false,
+          "unusedparams": false,
+          "waitgroupgo": false,
+          "writestring": false
+        }
+      }
+    }
+  }
+}

@@ -18,4 +18,23 @@
 !/tunic_aspect.py
 !/ide-reload-extension/
 !/games/
+!/code-workspace.ps1
+!/claude-notion-read-only.ps1
+!/claude/
+# sweeps\ holds one-off machine scripts; only the ones named here are public.
+!/sweeps/
+/sweeps/*
+!/sweeps/clean-temp.ps1
+!/sweeps/enable-game-bar-recording.ps1
+!/sweeps/fix-winget-daily-wsl-update.ps1
+!/sweeps/prepare-games-2026-11-06.ps1
+!/sweeps/remove-epic-uninstall-keys.ps1
+!/sweeps/remove-extra-local-users.ps1
+!/sweeps/remove-windows-ai-workloads.ps1
+!/sweeps/restore-xbox.ps1
+!/sweeps/set-build-priority.ps1
+!/sweeps/set-claude-effort-default.ps1
+!/sweeps/set-vulkan-native-driver.ps1
+!/sweeps/test-home-latency.ps1
+!/sweeps/uninstall-epic-games-launcher.ps1
 __pycache__/

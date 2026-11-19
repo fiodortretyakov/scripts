@@ -1,0 +1,1502 @@
+; ############################################################################
+;  SETTLED STATE - 11 September 2026. READ THIS BEFORE CHANGING ANYTHING.
+;  Result: a steady 30 fps with rare dips to 27, at 5120x1440.
+;
+;  MEASURED COST TABLE (bisect run at 100 % render scale, minimum quality baseline 15.9 ms):
+;     ambient occlusion  29.6 ms | fog+reflections+translucency 14.9 ms
+;     native resolution  ~12.5 ms | shadows 11.5 ms | light functions/shafts/particles ~11 ms
+;  Costs downstream of the render target scale with the SQUARE of the render fraction, so at the
+;  50 % actually in use every figure above is roughly a quarter of what it says. Use the table for
+;  RANKING what to cut, never for predicting an fps number - that mistake was made twice today.
+;
+;  THREE RULES THAT CAME OUT OF THE MEASUREMENTS:
+;   1. r.DynamicRes.* IS INERT in this build - the game overrides it from code, the same
+;      SetByCode-beats-ini trap as t.MaxFPS and the HDR flag. r.ScreenPercentage is the real knob,
+;      and OperationMode is pinned to 0. Distrust any conclusion drawn from a DynamicRes test.
+;   2. THE FRAME CAP LIVES IN GameUserSettings.ini, NOT HERE. FrameRateLimit=30 works because the
+;      game's own code applies it; t.MaxFPS in this file does not, for the same precedence reason.
+;      That file is kept READ-ONLY because the game rewrites it on exit.
+;   3. WITH A CAP IN PLACE, extra average fps is WASTED - the target is the lowest average whose
+;      WORST CASE still clears the cap. Dips come from cluttered multi-light rooms, so costs that
+;      SPIKE with clutter/lights/effects are what must stay cut. Tried on 11 Sep: restoring even
+;      CONSTANT costs (SSR roughness, AO budget) deepened the dips, so the margin here is ~1-2 ms
+;      and there is nothing left to spend. Only free shader constants may still be added.
+;
+;  DELIBERATELY CUT FOR STABILITY - do not "restore" these without re-measuring the dips:
+;     r.Shadow.RadiusThreshold=0.03 (clutter x lights), r.ParticleLightQuality=1 (firefights),
+;     r.SeparateTranslucencyScreenPercentage=50 (smoke-filled rooms).
+;  DO NOT RAISE r.LightFunctionQuality above 1 - 1 is the cooked tier value; 2 was above shipped.
+;  SAFETY: the Steam launch option -norhithread must stay. It is the fix for the four identical
+;  D3D12 locked-door crashes of 27 August, and it was measured to cost nothing.
+; ############################################################################
+[Core.System]
+Paths=../../../Engine/Content
+Paths=%GAMEDIR%Content
+Paths=../../../Engine/Plugins/FX/Niagara/Content
+Paths=../../../Engine/Plugins/Experimental/PythonScriptPlugin/Content
+Paths=../../../Engine/Plugins/Developer/Concert/ConcertSync/ConcertSyncClient/Content
+Paths=../../../Engine/Plugins/VirtualProduction/MultiUserTakes/Content
+Paths=../../../Engine/Plugins/VirtualProduction/Takes/Content
+Paths=../../../Engine/Plugins/Runtime/HairStrands/Content
+Paths=../../../Engine/Plugins/Experimental/ControlRig/Content
+Paths=../../../Engine/Plugins/DLSS/Content
+Paths=../../../Engine/Plugins/Experimental/FullBodyIK/Content
+Paths=../../../SystemShock/Plugins/Tether/Content
+Paths=../../../SystemShock/Plugins/SkinnedDecalComponent/Content
+Paths=../../../Engine/Plugins/2D/Paper2D/Content
+Paths=../../../Engine/Plugins/Developer/AnimationSharing/Content
+Paths=../../../Engine/Plugins/Editor/GeometryMode/Content
+Paths=../../../Engine/Plugins/Editor/SpeedTreeImporter/Content
+Paths=../../../Engine/Plugins/Enterprise/DatasmithContent/Content
+Paths=../../../Engine/Plugins/Experimental/ChaosClothEditor/Content
+Paths=../../../Engine/Plugins/Experimental/GeometryProcessing/Content
+Paths=../../../Engine/Plugins/Experimental/GeometryCollectionPlugin/Content
+Paths=../../../Engine/Plugins/Experimental/ChaosSolverPlugin/Content
+Paths=../../../Engine/Plugins/Experimental/ChaosNiagara/Content
+Paths=../../../Engine/Plugins/Experimental/MotoSynth/Content
+Paths=../../../Engine/Plugins/MagicLeap/MagicLeapPassableWorld/Content
+Paths=../../../Engine/Plugins/MagicLeap/MagicLeap/Content
+Paths=../../../Engine/Plugins/Media/MediaCompositing/Content
+Paths=../../../Engine/Plugins/Runtime/Synthesis/Content
+Paths=../../../Engine/Plugins/Runtime/AudioSynesthesia/Content
+
+[/Script/WindowsTargetPlatform.WindowsTargetSettings]
+; DX12 kept - Gothic proves it works, and it is what unlocks the D3D12 driver-
+; optimized PSO disk cache below. SSGI was the real crash suspect, not DX12.
+; DX12 ONLY - settled 2026-08-11. No
+; DX11 A/B, and do not change this line. If the framerate ever needs to move, spend
+; r.ScreenPercentage or the detail knobs in [SystemSettings] instead.
+; Comment kept off the value line: UE4 only honours ';' at the START of a line,
+; so a trailing one is absorbed into the value and the RHI never matches.
+DefaultGraphicsRHI=DefaultGraphicsRHI_DX12
+
+[SystemSettings]
+; ================================================================
+;  System Shock 2023 - Snapdragon X / Adreno (ARM, Prism emulation)
+;
+;  REWRITTEN 2026-08-11 after measuring 6-7 fps. The previous version of this
+;  file chased maximum detail with no framerate measurement in the loop, and it
+;  was roughly an order of magnitude too heavy for this machine. The old values
+;  are not lost: the heavy version is backed up, and every line cut is listed in
+;  the ADD-BACK QUEUE at the bottom with its old value.
+;
+;  Budget reality: GPU benched 150 against a CPU of 223, at 5120x1440 = 7.4
+;  MPixels native, running an emulated x64 D3D12 renderer. Both halves were
+;  overcommitted - pixels AND draw calls - so both are cut here.
+;
+;  Add detail back ONE line at a time with the Steam FPS counter visible.
+; ================================================================
+
+; ---- THE FLOOR: render resolution. Biggest single lever by far. ----
+;      60% of 5120x1440 = 3072x864, i.e. 2.8x fewer pixels, and the UI still
+;      draws at native so text stays sharp.
+;      TemporalAA.Upsampling=1 is what makes this acceptable: TAA does the
+;      upscale from its own history buffer instead of a spatial filter, so 60%
+;      reads far closer to native than the resolution slider would suggest.
+;      Verified registered in the shipping exe. There is no FSR or DLSS path
+;      here - the DLSS plugin ships but is NVIDIA-only, so TAAU is the upscaler.
+;      This lives in [SystemSettings] deliberately: SetBySystemSettingsIni
+;      outranks SetByScalability, so it holds even when the game's own menu
+;      re-applies sg.ResolutionQuality=100 from ShockSettings.sav.
+;      TUNE THIS FIRST. 50 if still short, 70-80 once there is headroom.
+;      LOCKED AT 60. Tested 75 on 2026-08-11: 27 fps -> 18 fps. 75% is 1.56x the
+;      pixels of 60%, and 27/1.56 = 17.3, so pixel cost scales almost perfectly
+;      linearly here. THIS GPU IS PIXEL-BOUND, full stop.
+;      The corollary, measured the same day: object-count knobs (DetailMode=2,
+;      Shadow.RadiusThreshold=0.01, AO levels, SSR roughness, bloom) were ALL free -
+;      three separate tests each held 27 fps. So: spend on OBJECT COUNT, never on
+;      PIXELS.
+;      Lowered 60 -> 52 on 2026-08-11 to buy a stable 30 with a frame cap. Pixel
+;      ratio (52/60)^2 = 0.75, so ~27 avg becomes ~36 avg and the floor clears 30.
+;      If it still dips below 30: 50, then 48. Do not go above 60.
+;      Raised 52 -> 57 later the same day. The ~36 avg predicted above came back as a
+;      MEASURED 36, and the ask was to spend that headroom on detail and settle at 30.
+;      Pixel cost is linear here (proven by the 60 -> 75 test), so the landing point is
+;      52 * sqrt(36/30) = 56.96. Predicts ~30 avg. Resolution is item 1 in the add-back
+;      queue because it beats every detail knob for looks, and it is the ONLY knob with
+;      a measured model, so it is the only one that can target a specific fps.
+;      If the floor dips under 30: 55, then back to 52.
+;      57 MEASURED at 31-33 fps, so 52 -> 57 came in slightly CHEAPER than the pure
+;      quadratic predicted (it forecast 30). Raised 57 -> 60 on that measurement.
+;      Two real points now: 52 -> 36, 57 -> 32. Fitting fps * SP^2 = const off the newer
+;      one gives 60 -> 32 * (57/60)^2 = ~29, and 59 -> exactly 30.
+;      Went with 60 because it is the round step this queue always intended (60 -> 70 ->
+;      80) and 59 vs 60 is inside measurement noise. NOTE the older session measured
+;      60 -> 27; that was a different config, so the fresher point wins - but if 60 comes
+;      back at 27-28, that old number was right and 58 is the honest landing spot.
+;      Caveat worth remembering: 5% more linear resolution is a SMALL visual step. The
+;      remaining headroom at 30 fps is only ~7% of the frame budget, so nothing bought
+;      with it will be dramatic. Bigger looks need accepting a lower fps target.
+;      60 -> 57 ON 2026-09-08, TO HIT 30 fps. Straight from this file's own model rather than a
+;      guess: 27 fps measured at SP 60 gives K = 27 * 60^2 = 97,200, and sqrt(97200/30) = 56.9.
+;      That K is the same 97,000 the earlier sessions fitted, which is a good sign the model still
+;      holds after the fog, SSR and AO cuts. 57 renders 2918x820 instead of 3072x864.
+;      Chosen over cutting more detail because resolution is still the best looks-per-frame line
+;      in the file, and 5% less LINEAR resolution is a genuinely small visual step - TAAU
+;      reconstructs from history, so it does not read like a 5% res drop.
+;      If it lands under 30: 55. If it overshoots and you want detail back: 58.
+;      Alternative if you would rather keep the pixels: another fog cut (GridPixelSize 10 -> 12,
+;      GridSizeZ 48 -> 40) is worth roughly the same, but it costs the light shafts, which are
+;      most of this station's atmosphere. Resolution is the cheaper loss.
+;      REVERTED TO 60 the same day: he asked whether 30 is worth chasing and the answer is no -
+;      see the pacing argument below. Kept the model note above because it is correct and it is
+;      how to hit any future target.
+;      WHY 30 IS NOT WORTH IT HERE: the usual reason to want exactly 30 on a 60 Hz panel is that
+;      it is an exact half-refresh, so with VSync ON every frame shows for exactly two refreshes
+;      and pacing is perfectly even. That payoff does not exist in this setup - VSync is OFF (in
+;      ShockSettings.sav) and t.MaxFPS was measured INERT here, so nothing would hold the frame
+;      at 30. Worse, an AVERAGE of 30 means dips below it, and with VSync back on those dips
+;      would land on 20, which is a bigger judder than anything happening now.
+;      So 27 -> 30 is a 10% frame-time change with no pacing benefit, paid for with 5% less
+;      linear resolution forever. Not a good trade.
+;      *** 60 -> 70 ON 2026-09-11, PAID FOR BY THE AO FIX. ***
+;      The measured model, all at 100 % res: fixed ~3.4 ms, and ~79.6 ms of resolution-scaled work
+;      in the full config. Cutting AO from 29.6 to roughly 7 ms takes that scaled part to ~57 ms.
+;      At 70 % the scaled cost is 57 * 0.49 = ~28 ms, plus 3.4 fixed = ~31 ms, i.e. about 32 fps -
+;      so this buys BOTH a sharper image than the old 60 % AND the 30 fps that was never reachable
+;      while AO was eating a third of the frame.
+;      If it lands short of 30: 65, then 60. If it comes back above 35: 80.
+;      *** BACK TO 60 ON 2026-09-11 - ERROR, CORRECTED. The AO settings AND the
+;      resolution were changed in the same edit, so the 22 fps that came back cannot be attributed to either.
+;      60 is the exact resolution of the known 24-26 fps baseline, so with this restored the ONLY
+;      difference from that baseline is the AO fix, and the next number measures it cleanly.
+;        clearly above 26 -> the AO fix works and the saving can then be spent on resolution.
+;        still 24-26      -> the fix did nothing at this resolution and the 29.6 ms AO measurement
+;                            did not survive contact with the real config; investigate why.
+;      *** 60 -> 50 ON 2026-09-11, TO BUY A STABLE 30 RATHER THAN AN AVERAGE ONE. ***
+;      The stability batch did not move it, which says the dips are not spikes - the frame is simply
+;      close to the limit everywhere. A FLOOR of 30 therefore needs an AVERAGE near 35, and that
+;      needs ~6 ms, which no remaining quality line can give without gutting the look.
+;      Resolution is the only lever left with a measured rate: 60 -> 70 cost 6.5 ms, i.e. 0.65 ms per
+;      percentage point, so 60 -> 50 returns ~6.5 ms. Predicts ~35 fps average and a floor near 30.
+;      THIS IS A REAL VISUAL COST and the honest trade for the stable 30 asked for repeatedly:
+;      2560x720 reconstructed to 5120x1440 instead of 3072x864. TAAU hides a lot of it, but fine
+;      detail at distance will soften.
+;      LADDER: 55 if this overshoots and you want sharpness back; 48 if the floor still misses 30.
+;      Everything else in this file stays - the quality settings are no longer what is in the way.
+;      *** 50 -> 55 ON 2026-09-11, SPENDING HEADROOM HE TURNED OUT TO HAVE. ***
+;      50 % measured 35-36 fps, not the 25-26 first reported - a misread. So there was never a
+;      stability deficit at 50 %, there was ~5 ms of SPARE time above the 30 fps target (35.5 fps =
+;      28.2 ms against a 33.3 ms budget), and 60 -> 50 gave up more sharpness than was needed.
+;      At the measured 0.65 ms per percentage point, 50 -> 55 spends ~3.3 ms and predicts ~32 fps -
+;      which leaves a deliberate margin BELOW the 30 fps cap so the cap can actually hold flat
+;      rather than being a ceiling the machine keeps falling through.
+;      57 if 32 proves comfortable; back to 50 if the floor dips under 30.
+;      *** 55 -> 50 ON 2026-09-11, AND THIS IS THE SETTLING POINT. ***
+;      At 55 the frame CAP is demonstrably working - a 29-30 reading against a 30 ceiling is the cap
+;      holding - but the dips to 27-28 mean the worst case is ~37 ms against a 33.3 ms budget, i.e.
+;      about 4 ms short. 50 is the one resolution with a measured average (35-36 fps = 28.2 ms), so
+;      it has ~5 ms of margin and the dips should stay above 30 rather than showing through.
+;      THE PRINCIPLE, now that a cap is in place: extra average fps above the cap is WASTED, so the
+;      right target is not the highest average but the lowest average whose WORST CASE still clears
+;      the cap. Everything beyond that should be spent on looks, not frames.
+r.ScreenPercentage=50
+;      ---- DYNAMIC RESOLUTION - OPTION, NOT APPLIED. Added 2026-09-11. All four verified registered.
+;      The file's own model says resolution is the best looks-per-frame line and that the GPU is
+;      pixel-bound. Dynamic resolution spends that: it holds a frame-TIME target and lets the
+;      render scale float, so an empty corridor renders at 80-85 % and a fight drops to 55-60 %.
+;      It replaces r.ScreenPercentage above while active (the fraction comes from the dynamic
+;      state, not the cvar). Mode 2 ignores the game's own bUseDynamicResolution=False.
+;      Budget 37 ms = the 27 fps measured at SP 60, so the floor of the current look is kept and
+;      the headroom goes to pixels. It needs working GPU timestamps under Prism: if the picture
+;      pins to 55 (blurry) or to 85 (fps collapses), the timer is broken - remove the block.
+;      It also changes the METHOD in this file: fps becomes flat by design and quality varies,
+;      so the K model stops applying while this is on.
+;      *** LIVE 2026-09-11. THIS REPLACES r.ScreenPercentage=60 ABOVE - that line is now INERT
+;      while dynamic resolution is active, because the render fraction comes from the dynamic
+;      state instead of the cvar. It is left in place so that turning this block off restores the
+;      known-good 60 in one step.
+;      WHAT CHANGES: instead of one fixed resolution chosen for the worst case, the engine holds a
+;      frame TIME and floats the resolution to meet it. An empty corridor - which is most of this
+;      game - renders well above 60 %, and a fight in smoke drops below it. That is the whole
+;      point: the resolution is spent where there is room for it and given back where there is not.
+;      BUDGET 37 ms. With TargetedGPUHeadRoomPercentage left at its default 10, the heuristic
+;      actually aims at ~33 ms, so it errs toward FRAMES over resolution - deliberate, after
+;      21 fps was called bad. Raise the budget to 45 to buy resolution back at ~22 fps.
+;      RANGE 50-80 %. 60 was the fixed value, so there is real room in both directions.
+;      ChangePercentageThreshold 2 -> 4 so it does not re-scale for a 2 % difference; at 2 the
+;      resolution visibly pumps on a GPU whose frame time is this noisy.
+;      *** THE RISK, STATED PLAINLY: this heuristic reads GPU TIMESTAMPS every frame, which is the
+;      same mechanism just blamed for the translucency regression above. If Prism does not deliver
+;      usable timings, this fails in one of two visible ways, and both are one flip to undo:
+;        - the picture goes soft and STAYS soft (pinned at 50), or
+;        - fps collapses to ~15 and stays there (pinned at 80).
+;      Either way set OperationMode back to 0 and r.ScreenPercentage=60 takes over again.
+;      *** OPERATION MODE 2 -> 0 ON 2026-09-11. DYNAMIC RESOLUTION IS INERT IN THIS BUILD. ***
+;      Proof: the potato test set r.ScreenPercentage=25 with this at 0 and got 240 fps, while every
+;      ceiling change made with this at 2 - 40, 70, 80, 100 - changed nothing at all. The game
+;      overrides it from code, which is the same SetByCode-beats-ini trap this file already
+;      documents for t.MaxFPS and for bUseHDRDisplayOutput.
+;      Turning it off explicitly so r.ScreenPercentage above is unambiguously the resolution knob.
+;      Every r.DynamicRes.* line below is now decoration - do not tune them, and do not trust any
+;      conclusion in this file that was drawn from one.
+r.DynamicRes.OperationMode=0
+;      *** RETUNED FOR A STABLE 30 fps ON 2026-09-11. Read this before changing anything here.
+;      THE DIVISION OF LABOUR, now that dynamic resolution is on: the BUDGET sets the frame rate,
+;      and everything else in this file sets how much RESOLUTION that frame rate buys. Chasing fps
+;      with detail cuts is the old method and no longer applies - cuts now come back as sharpness.
+;      Budget 33.3 ms = 30 fps exactly. With TargetedGPUHeadRoomPercentage at its default 10 the
+;      heuristic aims at ~30 ms, i.e. 33 fps, and that margin is what makes 30 a FLOOR rather than
+;      an average - which is what "stable 30" actually means.
+;      Min 50 -> 40: at 50 the heuristic had nowhere left to go in a heavy fight, so it went over
+;      budget and the frame rate sagged instead of the picture. 40 is ugly but it is only reached
+;      in the worst moments, and a stable 30 is what was asked for.
+;      Max 80 -> 70: a lower ceiling means less distance to fall when a fight starts, so the
+;      resolution swings are smaller and the frame time is steadier.
+r.DynamicRes.FrameTimeBudget=33.3
+;      *** TEMPORARY DIAGNOSTIC 2026-09-11 - NOT a setting, REVERT AFTER ONE LAUNCH. ***
+;      Min and Max are pinned EQUAL so the render fraction cannot move. This is a single-variable
+;      test of one question: is the frame rate limited by PIXEL work at all?
+;      Three fixed-cost cuts (shadow maps 2048->1024, view distance 1.5->1.0, skeletal LOD -1->0)
+;      moved the frame rate by ZERO, and a 10 % cut in the frame-time budget moved it ~4 %. Both
+;      say the GPU's pixel work is not what is holding the frame.
+;      READ THE RESULT LIKE THIS:
+;        fps jumps to ~35+  -> it IS pixel bound, the heuristic was simply not lowering resolution,
+;                              and the fix is dynamic-resolution tuning, not more cutting.
+;        fps stays 26-29    -> NOT pixel bound. The limit is the render thread translating D3D12
+;                              under Prism (it carries the RHI work since -norhithread), or the
+;                              full-output-resolution passes at 5120x1440. No graphics cut reaches
+;                              30 in that case, and the only real levers left are draw-call count
+;                              (r.DetailMode, r.Shadow.RadiusThreshold) or output resolution.
+;      Restore 40 / 70 from Engine.ini.bak-2026-09-11f afterwards either way.
+;      *** DIAGNOSTIC RESULT 2026-09-11, AND IT IS THE MOST IMPORTANT MEASUREMENT IN THIS FILE. ***
+;      Pinned at 40 %: 26-28 fps. Floating 40-70 %: 26-28 fps. IDENTICAL. Nearly HALF the pixels
+;      changed nothing, which proves the frame is NOT limited by pixel work at all.
+;      WHAT WAS REALLY HAPPENING: the heuristic measures GPU time only. The GPU had spare capacity,
+;      so it raised the render fraction to its ceiling and sat there - 70 was never a compromise,
+;      it was simply the top of the range it was allowed. The limit is elsewhere: the render thread
+;      translating D3D12 under Prism emulation, which also carries the RHI work since -norhithread.
+;      CONSEQUENCE, and it inverts this file's entire history: PIXEL WORK IS EFFECTIVELY FREE below
+;      that floor, and DRAW-CALL work is what actually costs. Every "expensive pixel line" cut over
+;      the last month was sold for nothing. The old fps * SP^2 = K model is DEAD - it described a
+;      GPU-bound machine, and this one is not GPU bound any more.
+;      Max 40 -> 100 so the render fraction climbs until the GPU genuinely becomes the limit. That
+;      is now self-balancing: everything restored below competes with resolution for the same
+;      headroom, and the heuristic arbitrates automatically.
+;      Min 40 -> 50 because the floor should never be reached now; if it is, something regressed.
+r.DynamicRes.MinScreenPercentage=50
+;      *** 100 -> 80 ON 2026-09-11. THE CEILING IS THE REAL RESOLUTION CONTROL ON THIS MACHINE. ***
+;      Three measurements now say the heuristic does not track its budget here - it simply parks at
+;      whatever ceiling it is given: max 40 -> 26-28 fps, max 70 -> 26-28 fps, max 100 -> 22-23 fps.
+;      The first two are equal because the RENDER THREAD was the limit in both; at 100 % the pixel
+;      cost finally overtook it, which is the crossover this session was looking for.
+;      So treat MaxScreenPercentage as a fixed screen percentage, and the budget below as inert.
+;      WHY 80: at max 100 the frame was ~43 ms. Pixel cost scales with the SQUARE of the fraction,
+;      so 80 % is 0.64 of the pixels, i.e. roughly 28 ms of GPU - comfortably back under the
+;      ~36-38 ms render-thread floor that produced 26-28 fps. That should restore the frame rate
+;      while keeping a HIGHER resolution than the 70 that was running before today's restorations.
+;      If it comes back under 26, go to 70. If it comes back above 28, 85 is the next step up -
+;      free frames do not exist above the floor, so anything over 28 is unspent resolution.
+;      NOTHING ELSE WAS TOUCHED: PCSS, glossy SSR, the 8/64 fog, full AA, full-res translucency and
+;      the full AO budget all stay. They are pixel work and resolution is the cheaper thing to sell.
+r.DynamicRes.MaxScreenPercentage=80
+r.DynamicRes.ChangePercentageThreshold=4
+;      ---- frame cap, added with the 52% drop ----
+;      t.MaxFPS=30 is what turns spare headroom into STABILITY instead of a wobble.
+;      Uncapped, ~36 avg would swing 31-40 and the frame times would be uneven; a
+;      30 cap holds a flat frame every time the GPU can make it, and the panel's
+;      60 Hz virtual base makes 30 an exact half-refresh, so pacing is even too.
+;      Verified registered in the shipping exe. This outranks the game's own
+;      FrameRateLimit=0 (SetByGameSetting loses to SetBySystemSettingsIni).
+;      MEASURED INERT 2026-08-11 - the claim above is wrong in practice. At
+;      ScreenPercentage=52 the reported framerate was 36, i.e. exactly the UNCAPPED
+;      prediction, so nothing is capping at 30. Nightdive run their own settings system
+;      (ShockSettings.sav, not GameUserSettings), and IConsoleVariable::Set defaults to
+;      ECVF_SetByCode, which outranks SetBySystemSettingsIni - so their code wins.
+;      Harmless, so it stays, but do NOT count on it for a stable floor.
+t.MaxFPS=30
+r.TemporalAA.Upsampling=1
+;      PostProcessAAQuality 4 -> 6, re-applied 2026-09-08 after being WRONGLY BLAMED for the grey
+;      UI. The grey was OutputDevice sitting on an HDR device while the driver refused an HDR
+;      swap chain; none of the four lines in this beauty pass had anything to do with it.
+;      This raises the sample count TAA uses to RESOLVE its history, and at ScreenPercentage 60
+;      every pixel comes from that history - so it is the best image-quality buy left. Not free:
+;      more taps in a full-resolution pass. Back to 4 if the counter drops; 5 is the halfway step.
+;      6 -> 4 ON 2026-09-08 at 25 fps. Reverted in the order this file specified. It was the most
+;      expensive line of the beauty pass: extra taps in a FULL-RESOLUTION pass, every frame, on
+;      a GPU that is pixel-bound. 4 is where the config sat when he called it fast.
+;      BACK TO 6 ON 2026-09-08. The 25 fps reading was the baseline BEFORE this pass, not after -
+;      corrected later. The whole beauty pass was free, so it goes back and the cuts move
+;      to lines that actually cost something. Do not attribute frames to these again without a
+;      before AND after number.
+;      6 -> 4 ON 2026-09-11 for the 30 fps target. This is a FULL-RESOLUTION pass, so by the rule
+;      learned from Gen 5 TAA above it is one of the costs dynamic resolution cannot trade away -
+;      which makes it worth more now than when it was judged free at a fixed render fraction.
+;      4 is the value Nightdive cook for their own quality tier 3 (6 is their Cine tier).
+;      First line to put back to 6 if there is headroom after PCSS.
+;      BACK TO 6 ON 2026-09-11. It is a GPU pass, and GPU work is free below the render-thread
+;      floor. At a render fraction that now climbs toward 100 %, the TAA resolve is still where
+;      every pixel on screen comes from, so this remains the best image-quality line in the file.
+;      6 -> 4 AGAIN ON 2026-09-11. Same rule: the TAA resolve runs at OUTPUT resolution, 5120x1440,
+;      not at the render fraction - so its extra samples are a fixed toll the resolution ceiling
+;      cannot reduce. This is the same property that made Gen 5 TAA so expensive earlier today.
+;      4 is Nightdive's own cooked tier 3 value; 6 is their Cine tier.
+r.PostProcessAAQuality=4
+;      ---- GEN 5 TAA - OPTION, NOT APPLIED. Added 2026-09-11. Verified registered. ----
+;      r.TemporalAA.Algorithm 1 selects the experimental Gen 5 TAA that shipped in 4.26/4.27 and
+;      became TSR in UE5. It exists specifically to upsample better: sharper reconstruction and
+;      less ghosting at exactly this kind of 60 % render scale, which is where every pixel on
+;      screen comes from. NOT cheap - several compute passes at output resolution - and it is
+;      the same class of compute-heavy screen-space pass that SSGI was when it crashed the game
+;      in August. Test alone: if it crashes at start or in play, put it back to 0; if it runs,
+;      read the counter and decide whether the sharper image is worth what it costs.
+;      LIVE 2026-09-11 at his request. It matters MORE now than when it was written: with dynamic
+;      resolution on, the render fraction floats, so a better reconstruction filter does not just
+;      look sharper - it lets the same frame budget hold a higher fraction. Failure signature is
+;      its own and nothing else here shares it: a crash at start or in play, or visible ghosting
+;      and smearing behind moving mutants. Either one, set this back to 0.
+;      *** REVERTED 2026-09-11, THE SAME DAY. It measured 25-27 -> 18-20 fps and the two cuts it
+;      shipped with can only REMOVE work, so this is the cause with no ambiguity.
+;      THE MECHANISM IS THE IMPORTANT PART, because it is a general rule now: Gen 5 TAA runs its
+;      passes at OUTPUT resolution - 5120x1440 here - not at render resolution. So its cost does
+;      NOT shrink when dynamic resolution lowers the render fraction. It is a fixed toll on every
+;      frame that dynamic resolution cannot pay down, which is why the picture got slower AND
+;      softer at once: the heuristic kept cutting render fraction and never recovered the time.
+;      GENERAL RULE: with dynamic resolution on, any full-OUTPUT-resolution pass is far more
+;      expensive than it looks, because it is the one cost the system cannot trade away.
+;      Do not re-enable this while the output is 5120x1440.
+;r.TemporalAA.Algorithm=0
+; ---- image quality that survives upscaling (all near-free) ----
+;      Sharpen 1.5 -> 1.0 on 2026-08-11. 1.5 was tuned when the game rendered at
+;      native, where the sharpen pass had real pixels to work with. It now runs
+;      AFTER TAAU has upscaled from 60%, so it sharpens interpolated pixels and
+;      can ring - a pale outline on the dark side of high-contrast edges (pipe
+;      against wall, HUD text against panel). Put it back to 1.5 if 1.0 reads
+;      soft; ringing is the thing to watch for, not softness.
+;      THIS IS THE ONLY r.Tonemapper.Sharpen LINE; UE4 silently takes the last
+;      occurrence, so do not add a second one below.
+;      MipMapLODBias is back to 0 from -0.5: a negative bias costs texture
+;      bandwidth on unified memory and aliases badly once you are upscaling.
+;      Anisotropy 16 -> 8: at 60% render scale the two are near-indistinguishable
+;      and 8 spends less of the bandwidth the GPU is actually short of.
+;      RE-APPLIED 1.0 -> 1.5, the only BEAUTY line kept through this restore, because it is free:
+;      taps inside the tonemapper pass that already runs, no new pass and no new render target.
+;      Watch for ringing (a pale outline on the dark side of a high-contrast edge), not softness.
+;      *** 1.5 -> 1.1 ON 2026-09-11 - FREE, AND IT SHOULD LOOK BETTER, NOT WORSE. ***
+;      1.5 was restored earlier today with an explicit condition: that the game was rendering at
+;      native, because the sharpen runs AFTER the upscale. That condition no longer holds - the
+;      render scale is 50 %, so this sharpens pixels TAAU interpolated, which is precisely the case
+;      this file has warned about since August. The failure mode is ringing: a pale outline on the
+;      dark side of a high-contrast edge, a pipe against a wall, HUD text against a panel.
+;      Free either way - it is taps inside the tonemapper pass that already runs. 1.0 if any
+;      outline is still visible, 1.3 if it now reads soft.
+r.Tonemapper.Sharpen=1.1
+r.Tonemapper.Quality=5
+;      ---- AUTO HDR SUPPORT, added 2026-09-08. Engine HDR is dead on this GPU (see the HDR block
+;      below), so Windows Auto HDR is the HDR path now: it inverse-tonemaps the game's finished
+;      8-bit SDR frame. That changes what is worth tuning. Auto HDR AMPLIFIES whatever is in the
+;      SDR image, so the thing to protect is the SDR image's smoothness in the DARK, because
+;      this game is 90% dark corridors and stretching an 8-bit dark gradient is exactly where
+;      banding appears.
+;      GrainQuantization=1 is the dither UE4 applies before quantising the tonemapper output to
+;      8 bits. It is the single most Auto-HDR-relevant line available and it is FREE - it is a
+;      few instructions at the end of a pass that already runs. Pinned here rather than left to
+;      the default so it cannot be lost. NOTE this is dither, NOT film grain; film grain is a
+;      post-process volume property and is still unreachable from any ini.
+r.Tonemapper.GrainQuantization=1
+;      >>> MEASURED INERT 2026-09-07 - BOTH LINES BELOW. Do not tune them again. <<<
+;      Scanning the 7.5 GB base pak found 2,951 individual texture assets carrying an explicit
+;      Filter=TF_Nearest override (against 7 bilinear and 3 trilinear). The DeviceProfile
+;      TextureLODGroups all say MinMagFilter=aniso, but a per-asset Filter BEATS the group, so
+;      nearly every surface in the station is point-sampled no matter what these two say.
+;      Point filtering is deliberate art direction by Nightdive, it is set per asset, and NO ini
+;      can reach it - only a pak that replaces the texture .uasset headers (Nexus mod 21).
+;      That mod was declined 2026-09-07: it is cooked against the June 2023 v1.0 assets and this
+;      is the 2026-07-20 build, so its headers would be paired with base-pak .ubulk data.
+;      Consequence: these lines are kept only so they are correct IF that mod ever goes in. If it
+;      does, r.MaxAnisotropy becomes live for the first time and is then the line to drop to 4.
+r.MipMapLODBias=0
+;      8 -> 16 ON 2026-09-08, and for the FIRST TIME this line does something: the texture
+;      filtering pak (NVEnableTextureFiltering) replaced the TF_Nearest overrides, so anisotropy
+;      is finally live. Anisotropy is exactly the filtering that matters here - it sharpens
+;      surfaces viewed at a grazing angle, which in a first-person game means FLOORS and long
+;      corridors, i.e. most of what is on screen in Citadel. 8 -> 16 doubles the taps on those
+;      surfaces only; head-on surfaces are unaffected.
+;      Affordable because the batch that made this line live (filtering pak + motion blur + scene
+;      fringe) measured at 23 fps, i.e. FREE - so there is texture-bandwidth headroom to spend.
+;      This is the most on-taste line in the file: he wants realism, not pixelation.
+;      Drop to 8 if frames fall, then 4. Do NOT drop the mod - the mod is the whole point.
+r.MaxAnisotropy=16
+;      FilterSize 1.0 -> 0.9 on 2026-09-07. This is the spatial kernel TAA uses when it
+;      resolves its history, i.e. it sharpens the RECONSTRUCTION, where Tonemapper.Sharpen
+;      above sharpens the already-upscaled result. Doing it here is strictly better: it is
+;      the direct answer to the ringing warning on the Sharpen line, because real detail
+;      recovered at resolve time needs less faking afterwards. Free - it changes sample
+;      weights in a pass that already runs, no extra work. Verified registered in the exe.
+;      If the image starts to shimmer or crawl on slow pans, go back to 1.0; that is the
+;      failure mode, not softness. 0.8 is available if 0.9 still reads soft.
+r.TemporalAAFilterSize=0.9
+
+; ---- REAL HDR: the engine's own HDR output, not Windows Auto HDR ----
+;      Added 2026-08-11. All five verified registered in the shipping exe.
+;      OutputDevice 3 = ACES 1000-nit ST-2084/PQ, matching the G95NC's
+;      DisplayHDR 1000 / calibrated ~1000-nit peak. ColorGamut 1 = DCI-P3.
+;      UI.CompositeMode 1 keeps the HUD tone-mapped separately so it does not
+;      blow out. UI.Level raises HUD brightness if it reads dim in HDR.
+;      Requires: Windows HDR ON for the panel (Win+Alt+B) and Windows Auto HDR
+;      OFF for this exe - two HDR passes stacked look wrong.
+;      VERDICT 2026-08-11: engine HDR is OFF. The scene looked great, but the HUD
+;      became unreadable and r.HDR.UI.Level=3.0 changed NOTHING - proof the HUD does
+;      ENGINE HDR ON 2026-09-08 on request, overriding the 2026-08-11 verdict
+;      above. The HUD blowout was expected to come back exactly as it did in August, and
+;      it was wanted anyway. Everything below this point is unchanged from the August attempt.
+;      MITIGATION TO TRY, since r.HDR.UI.Level is inert here: the in-game brightness/gamma
+;      slider darkens the HUD along with the scene, because the HUD is composited into scene
+;      colour BEFORE the tonemapper (through the game's own MAT_UI_ScreenEffects material,
+;      which is why no r.HDR.UI.* cvar can reach it).
+;      REQUIRED, and it is a manual step: Windows Auto HDR must be OFF for this exe or two
+;      HDR passes stack. Settings > System > Display > Graphics > SystemReShock > Options.
+;      TO REVERT: put these two lines back to 0. Nothing else needs touching.
+;      >>> ATTEMPT 3, 8 September 2026: scRGB. THIS IS THE COMMUNITY RECIPE. <<<
+;      Attempts 1 (11 August) and 2 (8 September, morning) both used OutputDevice=3, ACES
+;      1000-nit ST-2084/PQ, and both washed the UI out - grey, unreadable inventory and menus.
+;      The recipe people actually run for this game is OutputDevice=5 + ColorGamut=2, and the
+;      difference is not brightness, it is ENCODING. Device 3 is PQ: the whole 0-1 range is
+;      remapped onto an absolute-nit curve, so UI drawn at sRGB 0-1 lands wherever ACES puts it.
+;      Device 5 is scRGB linear FP16: 0-1 stays SDR sRGB and only values ABOVE 1.0 become HDR
+;      highlights - so a UI drawn at 0-1 keeps SDR paper white by construction. Same 1000-nit
+;      target as device 3, so this is not a brightness gamble.
+;      Gamut 2 = Rec.2020 (was 1 = DCI-P3), which is what the scRGB recipe pairs with.
+;      NOTE the earlier warning in this file against devices 4 and 6 conflated encoding with the
+;      nit target: 4 and 6 are the 2000-nit variants and are still not wanted, but 5 was never
+;      the same thing as 4/6 and should have been tried first.
+;      Known residual artefact from community reports even with this recipe: 2D inventory ICON
+;      textures can still read washed out. If that happens, the ladder is:
+;        1. r.HDR.UI.CompositeMode=0   (never tried; skips the separate UI luminance pass)
+;        2. r.HDR.UI.Level 3.0 -> 1.0  (3.0 was measured inert with device 3, retest on 5)
+;        3. give up on engine HDR and go back to Windows Auto HDR (set the two lines to 0)
+;      No native HDR menu exists to fall back on: an exe string scan on 8 September 2026 found
+;      only stock UE4 API names (HDRDisplayOutputNits, GetCurrentHDRDisplayNits) and no menu
+;      text - the Display HDR option present in the 2021 demo was cut from the release build.
+r.AllowHDR=0
+r.HDR.EnableHDROutput=0
+;      >>> DEVICE 5 -> 3 ON 2026-09-08. LAST CLEAN TEST OF ENGINE HDR. <<<
+;      Device 5 (ACES 1000-nit scRGB) needs the swap chain to be DXGI_FORMAT_R16G16B16A16_FLOAT
+;      in the scRGB colour space. Device 3 (ACES 1000-nit ST-2084/PQ) needs R10G10B10A2 in the
+;      PQ colour space instead. If the Adreno driver under Prism will not create one of those
+;      two, UE4 falls back to an SDR swap chain but the TONEMAPPER keeps encoding for whatever
+;      OutputDevice says - and HDR pixels in an SDR surface is exactly the grey picture. So the
+;      swap-chain FORMAT is the variable worth changing, and 10-bit PQ is far more widely
+;      supported than FP16 scRGB on mobile-derived GPUs.
+;      Neither device has ever had a CLEAN test: every device-3 attempt ran with
+;      bUseHDRDisplayOutput already reset to False by a previous exit, and the one device-5
+;      success was the single launch right after that flag was first written.
+;      Gamut back to 1 (DCI-P3), which is what pairs with PQ on the G95NC.
+;      IF THIS IS ALSO GREY: engine HDR is out on this hardware. Set AllowHDR=0,
+;      EnableHDROutput=0 AND OutputDevice=0 - all three, or the grey stays - and use Special K.
+r.HDR.Display.OutputDevice=0
+r.HDR.Display.ColorGamut=0
+r.HDR.UI.CompositeMode=1
+;      UI.Level 3.0 -> 1.0 (ENGINE DEFAULT) on 8 September 2026, after he reported HDR working
+;      on device 5 with the inventory icons washed out. This cvar is a LUMINANCE MULTIPLIER for
+;      UI elements composited into the HDR framebuffer. It was set to 3.0 in August to brighten
+;      a HUD that read dim under device 3, and it was measured inert there - but under scRGB it
+;      is not inert and it is actively wrong: on device 5 the value 1.0 already IS SDR paper
+;      white, so a 3x multiplier drives UI whites to roughly 300 nits. Washed out is exactly
+;      what that looks like. 1.0 puts the UI back at paper white.
+;      ONE CHANGE AT A TIME: if the icons are still washed out after this, the next single step
+;      is r.HDR.UI.CompositeMode=0. Do not change both at once - CompositeMode 0 removes the
+;      luminance-preserving blend for the WHOLE UI and can regress text that currently reads fine.
+;      If neither helps, it is not fixable from an ini: the inventory icons in this game are very
+;      likely scene captures of the item meshes rather than flat 2D art, and a capture render
+;      target does not go through the UI composite path at all.
+;      REVERTED TO 3.0 the same day at his call: he preferred how it looked at 3.0 and accepts
+;      the washed-out inventory icons. So the multiplier is NOT the icon cause after all, or he
+;      simply likes the brighter HUD - either way 3.0 is the setting he wants. Do not "fix" this
+;      again. If the icons are ever revisited, r.HDR.UI.CompositeMode=0 is the untried step.
+r.HDR.UI.Level=3.0
+
+; ---- RAM: texture streaming ----
+;      PoolSize 6144 -> 3072 and FullyLoadUsedTextures dropped. On this SoC the
+;      GPU shares LPDDR5X bandwidth with the CPU, so forcing full mips resident
+;      for every used texture spends the one resource the GPU is starved of.
+;      LimitPoolSizeToVRAM=0 still lets the pool draw from system RAM.
+;      Raised 3072 -> 4096 on 2026-08-11: pop-in is an immersion cost and pool size
+;      4096 -> 6144 on 2026-08-12 by choice, with RAM measured free and the
+;      GPU pegged at 100%. NOTE the older warning in this file said never to go back to
+;      6144 because that value was in the 6-7 fps config - but the line that actually
+;      cost those frames was r.Streaming.FullyLoadUsedTextures=1, which forced full mips
+;      resident for every used texture and is still gone. Pool size alone only sets a
+;      budget; it does not force anything resident. Worst case on this unified-memory
+;      SoC is more LPDDR5X bandwidth contention, so if the counter drops, this reverts.
+;      6144 -> 8192 on 2026-08-27 (RAM-for-disk trade, 31.6 GB fitted): a bigger budget means
+;      far textures stay resident instead of being dropped and re-streamed. Budget only.
+r.Streaming.PoolSize=8192
+; is paid in RAM (31 GB here), not in frames. Do NOT go back to 6144 - that was
+;      part of the config that ran at 6-7 fps.
+r.Streaming.LimitPoolSizeToVRAM=0
+r.Streaming.MaxTempMemoryAllowed=4096
+r.Streaming.HiddenPrimitiveScale=1
+;      CPU-for-pop-in, 2026-08-27: streaming metrics refreshed every 3 frames instead of 5,
+;      and 200 static components (not 50) re-evaluated per frame. Game-thread cost only; the
+;      CPU has the headroom. Textures reach full mips sooner after turning a corner.
+;      BOTH BACK TO ENGINE DEFAULTS (5 and 50) ON 2026-09-11. They were raised on 2026-08-27 as a
+;      "CPU for pop-in" trade, on the reading that the CPU had headroom - true of the CPU as a
+;      whole, but this is per-frame work on a thread that today's measurements identify as the
+;      actual bottleneck. Reverting costs only slightly slower texture mip updates after turning a
+;      corner; it costs no image quality at all.
+;      Smaller effect than the prepass above, and a different thread, so it will not confuse the
+;      attribution of that change.
+;      ALSO NO CHANGE, so the 2026-08-27 values go back on 2026-09-11. They were bought to reduce
+;      texture pop-in after turning a corner, the measurement says they cost nothing, so there is
+;      no reason to keep the engine defaults and lose that.
+;      *** BOTH BACK TO ENGINE DEFAULTS (5 and 50) ON 2026-09-11 - also aimed at the movement dip.
+;      These were raised on 2026-08-27 to cut texture pop-in, and they are GAME-THREAD work whose
+;      cost scales with how many components change relevance per frame - which is near zero standing
+;      still and at its maximum when sprinting through the station. Re-evaluating 200 static
+;      components every 3 frames instead of 50 every 5 is roughly 6x the churn precisely when the
+;      frame is already tight.
+;      An earlier test today showed no change in AVERAGE fps from this, which was the wrong metric:
+;      it was never an average cost, it is a movement cost - the exact thing being fixed here.
+;      Cost of reverting: textures reach full sharpness slightly later after turning a corner.
+;      BOTH BACK TO 3 / 200 ON 2026-09-11, same reason: no measured effect on the dips, and the
+;      engine defaults only cost later texture sharpening after a corner. Twice now this pair has
+;      measured as nothing - treat it as settled and do not cut it again.
+r.Streaming.FramesForFullUpdate=3
+r.Streaming.NumStaticComponentsProcessedPerFrame=200
+
+; ---- DISK: PSO + shader caches. Free, and they are why revisiting an area
+;      never re-stutters. Untouched by the perf reset.
+r.ShaderPipelineCache.Enabled=1
+r.ShaderPipelineCache.StartupMode=1
+r.ShaderPipelineCache.SaveAfterPSOsLogged=25
+D3D12.PSO.DiskCache=1
+D3D12.PSO.DriverOptimizedDiskCache=1
+;      2026-08-27: precompile the recorded PSOs in bigger batches with more time per frame
+;      (defaults 50 / 16 ms). Longer loading screens, fewer first-encounter stutters in play.
+;      *** RE-APPLIED 2026-09-11 after the restore: the ONE find of the day that should ADD frames.
+;      Precompile* runs during the LOADING SCREEN (free) and stays at 200 / 50 ms. The plain pair
+;      governs the background batch DURING PLAY, and 50 ms of compile budget on a machine whose
+;      whole frame is ~40 ms could halve the frame rate wherever PSO work is pending. 16 ms is the
+;      engine default. This has never been measured alone - it is the best hope in this file.
+r.ShaderPipelineCache.BatchSize=50
+r.ShaderPipelineCache.PrecompileBatchSize=200
+r.ShaderPipelineCache.BatchTime=16
+r.ShaderPipelineCache.PrecompileBatchTime=50
+;      Create shader objects when a material loads, not on first draw. Load-time CPU + RAM
+;      for no shader-creation hitches mid-fight.
+r.CreateShadersOnLoad=1
+
+; ---- DISK: dedicated async asset-loading thread ----
+s.AsyncLoadingThreadEnabled=1
+s.AsyncLoadingUseFullTimeLimit=0
+
+; ================================================================
+;  GAME THREAD - the last untested subsystem, 2026-09-11.
+;
+;  WHY WE ARE HERE. He removed -norhithread and the frame rate did not change, which kills the
+;  render-thread theory this file spent the day building. Put together with everything else
+;  measured today - render fraction 40 vs 100 barely matters, draw calls measured free four times,
+;  removing the whole depth prepass did nothing, shadow maps and AA are worth ~1 fps - almost
+;  nothing on the GPU or the render thread moves this frame.
+;  That leaves the GAME THREAD: UE4 gameplay work, animation, Blueprint VM, actor ticking, all of
+;  it x64 code running under Prism emulation. Nothing in this file has ever touched it.
+;  If these four lines do not move the number either, the limit is emulation overhead itself and
+;  30 fps is not reachable from any config - that is a real answer, not a failure.
+; ================================================================
+;      ---- FREE: no visual change from either of these two. ----
+;      ParallelAnimUpdate defaults to 0, meaning ALL animation update work - anim Blueprint logic
+;      for every mutant, cyborg, corpse and the Hacker's own arms - runs on the game thread. 1 pushes
+;      it across the task graph onto the 11 cores sitting idle. This is the single best "move work to
+;      cheap resources" line left, and it is exactly the trade this machine wants.
+;      Failure mode is animation misbehaving (pops, T-poses) if an anim Blueprint is not thread-safe.
+a.ParallelAnimUpdate=1
+a.ParallelAnimEvaluation=1
+;      Async loading is allowed 5 ms of GAME-THREAD time per frame by default. On a ~43 ms frame that
+;      is over 10 % handed to streaming whenever anything is loading. 2 ms gives most of it back; the
+;      cost is textures and assets arriving a little later after a door opens.
+;      BACK TO THE ENGINE DEFAULTS ON 2026-09-11: no measured gain, and 2 ms only made assets arrive
+;      later after a door opens. .ParallelAnimUpdate/.ParallelAnimEvaluation above are KEPT -
+;      unlike these, they cost nothing at all, and moving animation onto idle cores can only help in
+;      a busy fight even if a quiet corridor cannot show it.
+s.AsyncLoadingTimeLimit=5
+
+; ---- CPU: parallel render-command generation. This is the half of the machine
+;      with headroom (223 vs 150), so it stays on - except the thread lag below.
+;      OneFrameThreadLag stays at 1. It was flipped to 0 on 2026-08-11 to trade
+;      throughput for input latency, and reverted the same day by choice:
+;      losing fps is not acceptable here. With it at 1 the game thread runs a frame
+;      ahead of the render thread, which costs ~37 ms of input delay at 27 fps but
+;      lets the two threads overlap. DO NOT set this to 0 again -
+;      it reliably costs frames on this machine, which is the wrong side of the
+;      trade here.
+
+;      RHI THREAD OFF 2026-08-27. Four identical crashes on 2026-08-27 (00:31, 00:32, 01:08,
+;      01:16), reproducible by approaching a locked door; mods ruled out (same crash with
+;      InstantCardSwipes deleted) and the parallel cvars below ruled out (same crash with
+;      all of them at 0). Every minidump shows the same stack on the dedicated RHI thread
+;      (FRHIThread::Run -> ProcessThreadUntilRequestReturn(RHIThread) -> FExecuteRHIThreadTask
+;      -> FRHICommandListExecutor::ExecuteInner -> FD3D12CommandContext resource transitions
+;      -> virtual call on an already-freed D3D12 resource, DEP execute fault at a heap
+;      address). With the RHI thread disabled the command lists execute on the render thread
+;      before the resource can be released. Costs fps. The parallel cvars are back at their
+;      original values because they were not involved.
+;      If the door still crashes with this at 0, nothing else inside the D3D12 path is left
+;      to switch off from the ini.
+;      2026-08-27 01:18: r.RHIThread.Enable=0 in this section made the game crash at start:
+;      "Console object named r.RHIThread.Enable can't be replaced with the new one of
+;      different type" - in this build it is a console COMMAND, so it cannot be set from an
+;      ini. The RHI thread is disabled with the Steam launch option -norhithread instead.
+;      (Do not put r.RHIThread.Enable in this file.)
+r.RHICmdUseParallelAlgorithms=1
+r.RHICmdBypass=0
+r.ParallelPrePass=1
+r.ParallelBasePass=1
+r.ParallelShadows=1
+r.ParallelTranslucency=1
+r.MeshDrawCommands.DynamicInstancing=1
+;      RE-APPLIED pins. Both are already the engine default, so no change is expected - they are the
+;      two mechanisms that keep draw-call work OFF the render thread (cached commands reuse earlier
+;      frames' work; parallel setup builds them on the idle task threads), and a scalability change
+;      silently dropping either would be the worst possible regression on this machine.
+r.MeshDrawCommands.UseCachedCommands=1
+r.MeshDrawCommands.ParallelPassSetup=1
+r.OneFrameThreadLag=1
+r.GTSyncType=1
+;      2026-08-27: split parallel command lists every 32 draws instead of 64, so more of the
+;      12 cores translate RHI commands at once and the render thread (which now also runs
+;      the RHI work) has less to do itself.
+;      RE-APPLIED: 32 -> 64 (engine default). Smaller batches mean MORE command lists, and each one
+;      costs begin/end and state-restore work at EXECUTION - which since -norhithread is serial on
+;      the render thread, the measured bottleneck. Zero visual change.
+r.RHICmdMinDrawsPerParallelCmdList=64
+
+; ---- culling: hierarchical Z instead of hardware occlusion queries ----
+;      Added in the perf reset. Occlusion queries make the CPU wait on GPU
+;      results, and that round-trip is exactly what emulation punishes.
+r.HZBOcclusion=1
+
+; ---- DEPTH PREPASS: the last big DRAW-CALL saving, and it costs NOTHING to look at. ----
+;      Added 2026-09-11. Verified registered. The cooked project setting is r.EarlyZPass=2, i.e.
+;      every opaque AND masked mesh is drawn TWICE per frame: once depth-only to prime the depth
+;      buffer, then again for real. The prepass exists to stop the GPU shading pixels that later
+;      get covered up.
+;      WHY IT IS THE RIGHT THING TO CUT HERE, and this is the whole lesson of today applied:
+;        1. It is pure DRAW-CALL cost, which is the class this machine is actually limited by -
+;           the render thread translates every one of those calls through Prism emulation.
+;        2. What it BUYS is saved GPU shading, and this machine has GPU to spare: cutting 36 % of
+;           the pixels earlier bought exactly one frame.
+;        3. The Adreno X1-85 is a tile-based GPU with hardware low-resolution-Z occlusion, so it
+;           already does in hardware most of what the prepass does in software. On this GPU
+;           specifically the pass is closer to redundant than it would be on a desktop part.
+;      So it trades work the machine cannot afford for work it has spare. ZERO visual difference -
+;      the final image is identical, only the route to it changes.
+;      IF THIS BACKFIRES the symptom is the opposite of a draw-call win: the frame rate falls
+;      instead of rising, because overdraw now costs more than the calls saved. Middle step is
+;      r.EarlyZPass=1 (opaque only, skipping the expensive masked meshes); 2 restores the cooked
+;      behaviour. The DBuffer feature that would REQUIRE a prepass is off in the cooked config
+;      (r.DBuffer=False), so nothing depends on this.
+;      MEASURED: NO CHANGE (24-26 fps before and after), so BACK TO THE COOKED VALUE 2 on
+;      2026-09-11. The reasoning for cutting it was sound and the measurement simply says draw
+;      calls are not the limit either. Restoring it is the safe default: the shipped path is the
+;      tested one, and without a prepass a heavy-overdraw room could cost frames later even though
+;      the test scene did not. Keeping a change that buys nothing is how a config rots.
+r.EarlyZPass=2
+
+; ---- STABILITY: free, added 2026-08-27 alongside -norhithread ----
+;      ResizeMethod 2 = render targets only ever GROW. Default 0 reallocates them on every
+;      resolution change (menu <-> game, cyberspace), which is exactly the create/destroy
+;      churn behind the door crash. Costs a little RAM once, never frames.
+r.SceneRenderTargetResizeMethod=2
+;      RE-APPLIED: the cooked tier-3 render-target pool floor. Keeps intermediate buffers allocated
+;      instead of freed and recreated as the pass mix changes; allocation is render-thread work,
+;      holding memory is not. RAM for frames, same trade as the shadow cache above.
+r.RenderTargetPoolMin=400
+;      Cap cached point/spot shadow-map refreshes at 2 per frame (default -1 = unlimited).
+;      Spreads the cost of many lights changing at once over a few frames instead of one
+;      spike; average fps unchanged, frame pacing smoother in busy rooms.
+;      *** 2 -> 1 ON 2026-09-11, FOR THE FLOOR, NOT THE AVERAGE. ***
+;      These cap how many cached point/spot shadow maps may be re-rendered in a single frame. They
+;      cost nothing on average - the same maps are refreshed either way - they just refuse to do
+;      several in one frame. A point light's shadow is a SIX-FACE cubemap, so two of them landing on
+;      the same frame is a large, sudden spike, and this station is full of flickering lights.
+;      This is the purest stability line available: it converts a dip into a one-frame-late shadow.
+r.Shadow.MaxNumPointShadowCacheUpdatesPerFrame=1
+r.Shadow.MaxNumSpotShadowCacheUpdatesPerFrame=1
+
+; ---- CPU/RAM: fewer GC hitches + cached static shadows ----
+gc.TimeBetweenPurgingPendingKillObjects=120
+r.Shadow.CacheWholeSceneShadows=1
+
+; ---- SHADOWS: where most of the 6-7 fps went ----
+;      RadiusThreshold 0.0 was the worst line in the old file. It removed the
+;      small-caster cull, so every piece of clutter was re-rendered once per
+;      shadow-casting light in range - and LightMaxDrawDistanceScale=4 had
+;      widened "in range" fourfold at the same time. Back to the 0.03 default.
+;      4096 maps at DistanceScale 2.0 also overflowed the whole-scene shadow
+;      cache every frame, quietly turning the cache above into a per-frame
+;      re-render. 2048 at scale 1.0 fits in 256 MB and actually caches.
+;      *** 3 -> 5 ON 2026-09-11. NOT a beauty add - a CORRECTION. ***
+;      The cooked ShadowQuality@3 tier, which is the tier this machine runs (sg.ShadowQuality=3 in
+;      GameUserSettings), ships r.ShadowQuality=5. This file has been pinning 3 since the August
+;      reset with no note justifying it, almost certainly copied from the sg. tier INDEX by mistake.
+;      It is a feature switch, not a resolution, so the game has been running BELOW its own High
+;      preset for shadows and nothing else in this file could compensate.
+;      THE SUSPECT if the frame rate drops from 24: this line, not the LOD line above, which is
+;      near-certainly innocent by class.
+r.ShadowQuality=5
+;      ---- PCSS: ADD-BACK QUEUE ITEM 9, DONE 2026-09-08. The last item in the queue. ----
+;      FilterMethod 0 -> 1 swaps uniform PCF for percentage-closer soft shadows. PCF filters a
+;      fixed-width kernel, so every shadow edge has the same softness no matter what cast it.
+;      PCSS first searches the shadow map for how FAR AWAY the blocker is, then sizes the filter
+;      from that - so a crate on the floor gets a hard contact edge and the same crate's shadow
+;      thrown across a corridor goes soft. That is the single most convincing lighting cue in a
+;      game lit by hard point lights in dark rooms, which is why the queue ranked it first for
+;      looks and last for affordability.
+;      IT IS THE MOST EXPENSIVE LINE IN THIS FILE after ScreenPercentage: two passes over the
+;      kernel per shadowed pixel (blocker search, then the variable-width filter) instead of one.
+;      TUNE BEFORE REVERTING: r.Shadow.MaxSoftKernelSize (default 40) only becomes live with PCSS
+;      and it CAPS the widest filter, so dropping it to 24 or 16 keeps contact-hardening while
+;      cutting the worst-case cost. Try that before going back to FilterMethod 0.
+;      Verified registered in the shipping exe 2026-09-08. Expect this to cost real frames -
+;      it is the one line here that has never had a plausible free-lunch argument.
+;      *** PCSS OFF 2026-09-11 to hit a stable 30. This file measured it at 4 fps (27 -> 23) and
+;      called it the most expensive line after ScreenPercentage - two passes over the kernel per
+;      shadowed pixel instead of one. It is the single biggest saving available that is not
+;      resolution, which is exactly what a 30 fps target needs.
+;      THIS IS A REAL LOSS AND IT IS THE ONE TO BUY BACK FIRST: shadow edges go back to a uniform
+;      softness, so a crate no longer has a hard edge where it meets the floor and a soft one
+;      where its shadow is thrown across the corridor. Set it to 1 again the moment there is
+;      headroom - it is the best-looking line in the file.
+;      r.Shadow.MaxSoftKernelSize below is PCSS-only and is now inert; it is left so that setting
+;      FilterMethod back to 1 restores the tuned version rather than stock.
+;      PCSS RESTORED 2026-09-11 after the pinned-40 % test. It was cut this morning for 4 fps that
+;      the test now proves were never available - it is per-pixel shadow filtering, i.e. exactly
+;      the class of work that measured free. This file calls it the best-looking line available
+;      and it goes back first, as the buy-back order said it should.
+r.Shadow.FilterMethod=1
+;      MaxSoftKernelSize 40 (default) -> 16, 2026-09-08. This cvar is ONLY live with PCSS and it
+;      caps the widest filter PCSS is allowed to use. The blocker search still runs, so contact
+;      hardening - the entire reason to want PCSS - is untouched; what shrinks is the worst case,
+;      the very soft far end of a long thrown shadow. That worst case is where nearly all of the
+;      cost lives, because filter cost grows with kernel AREA. This is the tune the file said to
+;      try before reverting PCSS. 24 if 16 reads too hard; 40 restores stock PCSS.
+;      16 -> 40 (STOCK PCSS) ON 2026-09-11. Best-value line on the re-add ladder. PCSS is already on;
+;      this cap only limits how wide its filter may get, and it was set to 16 back when PCSS was
+;      believed to cost 4 fps. Capping it throws away the very thing PCSS is for - the soft far end
+;      of a long thrown shadow - while contact hardening is unaffected either way.
+;      *** 40 -> 16 ON 2026-09-11. Better value than spending resolution, which is why it goes
+;      first. This cap is live ONLY with PCSS and it limits the WIDEST filter PCSS may use.
+;      PCSS cost grows with kernel AREA, so the very soft far end of a long thrown shadow is where
+;      nearly all of its cost lives - while the blocker search, and therefore the hard contact edge
+;      that is the entire reason to run PCSS, is untouched by this cap.
+;      So this keeps the effect and removes its worst case. 24 if 16 reads too hard.
+r.Shadow.MaxSoftKernelSize=16
+;      RadiusThreshold 0.03 -> 0.01 on 2026-08-11. Small props start casting shadows
+;      again - the single biggest Doom 3 tell in the game. NOT back to 0.0: that
+;      removed the cull entirely and was the worst line in the 6-7 fps config.
+;      0.01 keeps the very smallest casters culled. FIRST thing to revert if the
+;      counter drops - it is by far the most expensive change of the session.
+;      *** 0.01 -> 0.03 (STOCK) ON 2026-09-11. THE REAL STEP, AND IT TARGETS DIPS SPECIFICALLY. ***
+;      This is the cull that decides how small a prop has to be before it stops casting a shadow.
+;      At 0.01 nearly every piece of clutter casts - and a shadow caster is re-rendered ONCE PER
+;      SHADOW-CASTING LIGHT IN RANGE. So its cost is not constant: it is proportional to clutter x
+;      lights, which is precisely what a cluttered, multi-light room is, and precisely where the
+;      frame drops to 27-28. Cutting a constant cost would have raised the average and left the
+;      dips; this cuts the variance itself.
+;      0.03 is the engine and cooked-tier default, so this is not a low setting - 0.01 was the
+;      aggressive one, added on 2026-08-11 when this file thought object count was free.
+;      THIS IS A VISIBLE LOSS: small props stop casting their own shadows. It is the last big
+;      stability lever that is not resolution. 0.02 is the middle step if it reads too flat.
+r.Shadow.RadiusThreshold=0.03
+;      2048 -> 4096 on 2026-08-12, add-back queue item 5. This is the RAM-for-GPU trade
+;      asked for when the profile came back GPU 100% / CPU + RAM idle: the whole-scene
+;      shadow cache holds rendered shadow maps in RAM so static casters are NOT
+;      re-rendered every frame. Bigger maps need a bigger cache or the cache silently
+;      stops caching and every frame re-renders - which is exactly what made the old
+;      6-7 fps config so slow. 4096 maps are 4x the texels of 2048, so the cache goes
+;      256 -> 512 MB WITH them. These three lines move together, never separately.
+;      Nothing else here can shift load off the GPU: rasterisation cannot run on the CPU,
+;      so caching is the only genuine GPU->RAM trade available.
+;      FIRST THING TO REVERT if the counter drops - 4x shadow texels is the single most
+;      expensive line in this file after ScreenPercentage.
+;      4096 -> 2048 ON 2026-09-08, AND THE CACHE WITH IT (1024 -> 512 MB). This reverses the
+;      2026-08-12 add-back, and the argument for reversing it is a resolution argument, not a
+;      taste one: the scene renders at 3072x864 (ScreenPercentage 60 of 5120x1440), so a 4096
+;      shadow map carries roughly 4 shadow texels per rendered screen pixel. Every one of those
+;      extra texels is rasterised, filtered and cached, and TAAU then throws the detail away in
+;      the upscale. 2048 is still ~1 texel per screen pixel here, which is the point where more
+;      resolution stops being visible. This was the file's own second-most-expensive line.
+;      Put all three back to 4096/4096/1024 together if the shadows ever read blocky.
+;      *** 2048 -> 1024 ON 2026-09-11, AND THE CACHE WITH THEM (512 -> 256 MB). These three always
+;      move together - a cache sized for bigger maps than it holds silently stops caching.
+;      WHY THIS IS THE RIGHT CUT NOW, and it is a NEW argument that did not exist before dynamic
+;      resolution: shadow maps are rendered at a FIXED size. They do not shrink when the heuristic
+;      lowers the render fraction. So while every pixel cost is being traded away automatically,
+;      shadow rasterisation keeps charging the same amount every frame - which is exactly why the
+;      frame rate stalls at 26-28 instead of reaching the 30 the budget asks for.
+;      WHY IT IS CHEAP TO LOSE: the scene now renders between 40 % and 70 % of 5120x1440, so 2048
+;      maps were carrying well over one shadow texel per screen pixel at the top of that range and
+;      several at the bottom - detail the upscale discards. And with PCSS off, every shadow edge is
+;      uniformly soft anyway, which is the best possible cover for a lower-resolution map.
+;      Put all three back to 2048/2048/512 together if shadows read blocky or stair-stepped.
+;      BACK TO 2048 ON 2026-09-11 with the cache, for the same reason as PCSS above: shadow-map
+;      rasterisation is GPU work, and the GPU is not the limit. PCSS also needs the texels - the
+;      blocker search reads the map, so a 1024 map makes contact hardening mushy.
+;      *** 2048 -> 1024 AGAIN ON 2026-09-11, and this time with the RIGHT reason. ***
+;      A shadow map is rendered at a FIXED size. It does not shrink when the render fraction drops,
+;      so it is charged in full every frame no matter what the resolution ceiling says - and 2048
+;      is FOUR TIMES the texels of 1024 to rasterise, filter and cache.
+;      That is why the ceiling barely mattered: 100 % -> 22-23 fps and 80 % -> 23-24 fps, so
+;      cutting 36 % of the PIXELS bought one frame. The cost was never in the pixels.
+;      PCSS STAYS ON. It is per-shadowed-pixel work, which scales with the render fraction and is
+;      therefore in the cheap class; it just does its blocker search against a smaller map, so
+;      contact edges are slightly softer. That is a far better trade than losing PCSS entirely.
+r.Shadow.MaxResolution=1024
+r.Shadow.MaxCSMResolution=1024
+r.Shadow.DistanceScale=1.0
+;      RE-APPLIED: 256 -> 2048. Paid in RAM only (31.6 GB fitted, 6.3 GB working set) and it BUYS
+;      frames rather than costing them: a cache miss is a full re-render of every caster for that
+;      light, i.e. draw calls on the bottleneck thread. A point light's shadow cubemap is six faces,
+;      so 256 MB cached very few lights. Safe to oversize - the only cost is memory.
+r.Shadow.WholeSceneShadowCacheMb=2048
+;      512 -> 1024 on 2026-08-27, and 1024 -> 512 again on 2026-09-08. The cache has to be
+;      sized to the shadow maps it holds, so it moves with MaxResolution above and never on its
+;      own: 2048 maps are a quarter of the texels, so 512 MB holds the same NUMBER of cached
+;      lights that 1024 MB held at 4096. CachePreshadow keeps the static-onto-movable shadow
+;      maps cached as well (engine default, pinned here).
+r.Shadow.CachePreshadow=1
+;      ContactShadows=1 added 2026-09-08. Free to set. Contact shadows are a short screen-space
+;      ray march that fills in the tight shadow where an object meets a surface - the gap shadow
+;      maps always miss. IMPORTANT: it is driven per light by a Contact Shadow Length authored on
+;      the light asset, so if Nightdive left those at 0 this line is INERT and costs nothing at
+;      all. It is in because the upside (correct contact darkening on every prop) is large and
+;      the downside is zero. If frames drop, the lengths are non-zero and this is why.
+;      CONTACT SHADOWS OFF 2026-09-08, and this is a REDUNDANCY cut, not a quality cut. Contact
+;      shadows existed to fill in the tight shadow where an object meets a surface, which is the
+;      gap a fixed-width PCF kernel always left. PCSS (r.Shadow.FilterMethod=1, added the same
+;      day) now does that properly by sizing the filter from the blocker distance - so the
+;      contact edge is already hard. Paying for a screen-space ray march per shadowed pixel to
+;      re-solve a problem PCSS just solved is the definition of expensive and useless.
+;      This was also added in the same untested batch as PCSS, so it is part of the 27 -> 23.
+r.ContactShadows=0
+;      TransitionScale 60 -> 40 on 2026-09-08 (whole-scene and spot lights). This is the width of
+;      the shadow-edge fade in shader math - no extra samples, no extra passes, so it is FREE.
+;      Softer penumbrae are what stop 2048 maps reading as hard stair-stepped edges, so it pairs
+;      directly with the resolution drop above. Lower = softer; 20 is very soft, 60 is stock.
+;      40 -> 30 ON 2026-09-11. FREE - it is the width of the shadow-edge fade in shader maths, no
+;      extra samples and no extra pass. It is here as the deliberate partner to the two shadow
+;      losses taken today: softer edges are what hide a 1024 map, and they are also the closest
+;      free approximation of what PCSS was giving before it was cut. Lower is softer; 20 is very
+;      soft, 60 is stock. Go to 20 if the 1024 maps still show a hard stair-stepped edge.
+;      30 -> 40 ON 2026-09-11. 30 existed to hide a 1024 map and to fake what PCSS does; both of
+;      those reasons are gone now that PCSS and 2048 maps are back, and a uniform extra-soft fade
+;      actively fights PCSS by blurring the contact edge it works to keep hard.
+;      40 -> 30 ON 2026-09-11. FREE: this is the width of the shadow-edge fade in shader maths, no
+;      extra samples and no extra pass. It earns its place now because two things changed - shadow
+;      maps are 1024 and the render scale is 50 %, so a shadow edge is resolved by very few pixels
+;      and a harder fade shows the stair-stepping. Softer edges hide exactly that, and they also
+;      flatter PCSS rather than fighting it, because PCSS still sizes the filter from the blocker
+;      distance underneath. Lower is softer; 20 is very soft, 60 is stock.
+r.Shadow.TransitionScale=30
+r.Shadow.SpotLightTransitionScale=30
+r.LightMaxDrawDistanceScale=1
+
+; ---- GEOMETRY: back to stock draw-call counts ----
+;      ViewDistanceScale 2.0 with StaticMeshLODDistanceScale 0.25 held top-LOD
+;      meshes at twice the distance - a multiplied draw-call and vertex cost on
+;      the emulated render thread. DetailMode is back to 2 (High) as of 2026-08-11:
+;      it spawns the optional props and decals the level designers flagged, which is
+;      the most visible detail-per-frame in the file. It DOES cost frames - if the
+;      counter drops badly, this is the first line to put back to 1.
+;      MaterialQualityLevel stays High: it is genuinely near-free.
+;      ViewDistanceScale 1.0 -> 1.5 on 2026-08-27 (add-back item 7): distant props and
+;      clutter stay drawn instead of popping in. Object-count class, which this file measured
+;      as free on 2026-08-11 - BUT since 2026-08-27 the render thread also does the RHI work
+;      (-norhithread), so draw calls are less free than they were. If the counter drops, this
+;      is the line to put back to 1.0 before touching anything else.
+;      1.5 -> 1.0 (STOCK) ON 2026-09-11. This file already nominated it: "if the counter drops,
+;      this is the line to put back to 1.0 before touching anything else."
+;      It qualifies under the new rule as well - draw calls are FIXED cost. A draw call costs the
+;      same whether it covers 7.4 million pixels or 2 million, so dynamic resolution cannot trade
+;      it away, and since -norhithread the render thread carries the RHI work too. The August
+;      "object count is free" measurement was taken at a fixed render fraction and does not
+;      survive either change.
+;      The loss is real: distant clutter pops in closer. Back to 1.5 if 30 holds comfortably.
+;      1.0 -> 1.5 ON 2026-09-11. The ONLY class of line restored without a measurement risk: this
+;      exact cut (1.5 -> 1.0) was made earlier today and measured at EXACTLY NO CHANGE, so putting
+;      it back cannot cost what it did not save. Distant props and clutter stay drawn.
+;      Deliberately 1.5, not the 2.0 of the reverted batch - 1.5 is the value with a measurement
+;      behind it; 2.0 has never been measured on its own.
+r.ViewDistanceScale=1.5
+;      1.0 -> 0.5 ON 2026-09-11. Same CLASS as r.ViewDistanceScale and r.SkeletalMeshLODBias, which
+;      were both cut and measured at exactly no change today - vertex and draw-call work. So this is
+;      the one remaining beauty line with a measurement standing behind its price.
+;      The station itself - pipes, consoles, crates, walls - holds its TOP level of detail to about
+;      twice the distance. It is the direct fix for silhouettes going blocky down a long corridor,
+;      which is the most visible geometry artefact in first person.
+r.StaticMeshLODDistanceScale=0.5
+;      SkeletalMeshLODBias 0 -> -1 on 2026-09-08. Forces one LOD level better on every skeletal
+;      mesh, i.e. mutants, cyborgs, the corpses and the Hacker's own arms hold their top LOD to
+;      roughly twice the distance. This file previously listed -1 under "cut and NOT worth
+;      re-adding"; that judgement was made in the 6-7 fps panic and it does not survive the
+;      2026-08-11 measurement that object-count work is free on this GPU. It is also the
+;      narrowest possible version of that spend: there are only ever a handful of skeletal
+;      meshes on screen, and they are the things you actually look at.
+;      First to revert of the 2026-09-08 additions if a busy fight drops frames.
+;      -1 -> 0 (STOCK) ON 2026-09-11. Same reasoning: vertex and draw-call work is fixed cost that
+;      dynamic resolution cannot trade. -1 was added on 2026-09-08 on the strength of the
+;      "object count is free" measurement, which was made at a fixed render fraction. Characters
+;      now drop an LOD level at the normal distance. Cheap to restore - this is the smallest of
+;      today's three cuts and the second to buy back, after r.ViewDistanceScale.
+;      0 -> -1 ON 2026-09-11, same justification: it was cut in the SAME measured batch as
+;      ViewDistanceScale above and that batch moved the frame rate by zero. Mutants, corpses and
+;      the Hacker's arms hold their top LOD about twice as far - and they are what you look at.
+r.SkeletalMeshLODBias=-1
+;      *** 2 -> 1 ON 2026-09-11. A REAL CUT, and the first thing today aimed at the GAME THREAD. ***
+;      DetailMode decides which optional actors and components the level designers flagged actually
+;      get SPAWNED. Dropping to 1 removes the "high detail only" set entirely - so it is not just
+;      fewer draw calls, it is fewer ACTORS TO TICK every frame, which is game-thread work, plus
+;      fewer components to update, cull and submit.
+;      THIS IS VISIBLE: small clutter props and some decals stop existing. It is the biggest
+;      game-thread lever available from an ini, which is why it is worth the look.
+;      Back to 2 if the station feels bare and the frame rate did not move.
+;      BACK TO 2 ON 2026-09-11. The game-thread pass measured NO CHANGE (23 -> 24-26, i.e. noise),
+;      so this was a visible loss bought for nothing. Optional clutter props are spawned again.
+r.DetailMode=2
+r.MaterialQualityLevel=1
+;      LightFunctionQuality 2 restored 2026-08-11. Sharpens the projected/flickering
+;      light patterns thrown across corridors - cheap, and pure atmosphere.
+;      *** 2 -> 1 ON 2026-09-11. 1 IS THE VALUE NIGHTDIVE COOK for this tier - we were ABOVE the
+;      shipped setting, which is the opposite of the ShadowQuality bug found earlier today.
+;      A light function is a texture projected by a light, and each one costs its own pass. Quality
+;      2 raises the resolution of those passes; 1 is what the game was authored and tested against.
+;      Lowest-visibility line in this batch by a distance.
+r.LightFunctionQuality=1
+;      Decal fade added 2026-09-07. The cvar MULTIPLIES each decal's own screen-size fade
+;      threshold, so SMALLER means a decal has to shrink further before it is dropped -
+;      0.25 keeps blood, scorch marks, leaks and grime drawn at roughly 4x the distance.
+;      Object-count class, which 2026-08-11 measured as free on this GPU three times over.
+;      This is the most atmosphere-per-frame line in the file: the station is meant to look
+;      lived-in and murdered-in, and decals popping in at 3 m is the tell that breaks it.
+;      Caveat since 2026-08-27: the render thread also carries the RHI work (-norhithread),
+;      so draw calls are less free than they were. Revert to 1.0 before touching anything
+;      else if the counter drops.
+;      0.25 -> 0.5 on 2026-09-07 after the 21 fps measurement. THE CLASSIFICATION ABOVE WAS
+;      WRONG: deferred decals are not object-count work. Each one rasterises a box that writes
+;      the GBuffer, so its cost is the SCREEN AREA it covers - it is pixel work, on the GPU this
+;      file proved is pixel-bound - plus a draw call. And since 2026-08-27 the render thread also
+;      carries RHI work (-norhithread), so the extra draw calls are not free either. The
+;      2026-08-11 "object count is free" measurement predates that change and does not cover this.
+;      0.5 keeps decals to ~2x stock distance instead of ~4x. Set 1.0 if frames are still short.
+;      0.5 -> 1.0 (STOCK) ON 2026-09-08. This line is the whole 27 -> 24 fps regression. Diffing
+;      this file against Engine.ini.bak-2026-09-07 shows only
+;      three lines added since: Bloom.Cross (free), TemporalAAFilterSize (free) and this one.
+;      The 2026-09-07 note above already worked out WHY it costs: a deferred decal rasterises a
+;      box that writes the GBuffer, so its cost is screen area on a pixel-bound GPU, plus a draw
+;      call on a render thread that now also carries the RHI work. Doubling decal draw distance
+;      multiplies both.
+;      BASELINE CORRECTED 2026-09-08: the pre-decal number at ScreenPercentage 60
+;      was 27, not 30. 30 was the SP 57 measurement. So this line cost 3 fps, not 6, and the
+;      revert buys back 3. Believe 27 at SP 60 - it is now the second session to report it,
+;      and this file already warned that "if 60 comes back at 27-28, that old number was right".
+r.Decal.FadeScreenSizeMult=1.0
+
+; ---- REFLECTIONS + FOG: the other big pixel cost ----
+;      Full-res SSR at 7.4 MPixels was never affordable. Temporal=1 stays - it
+;      is nearly free and it is what stops reflections crawling.
+;      Fog grid back to the 8px / 64 default: the old 4px / 128 quadrupled fog
+;      samples, and volumetric fog is per-pixel work in a station full of it.
+;      SSR.Quality 2 -> 1 ON 2026-09-08. A REAL cut. SSR marches rays through the depth buffer
+;      PER PIXEL, so it is true pixel work on the GPU this file proved is pixel-bound - unlike
+;      the object-count knobs, which were measured free three times over. Quality 1 uses fewer
+;      steps per ray, so reflections get shorter, not absent. Cheap loss here because the
+;      reflection is already half-res AND already reading a half-res scene colour, so nobody
+;      can see how far the ray went. Back to 2 if wet floors stop reflecting.
+;      1 -> 3 ON 2026-09-11, the value Nightdive cook for their own Effects tier 3. Quality 1 and 2
+;      are both MIRROR reflections that only fade with roughness; 3 is the first level that blurs
+;      the reflection BY roughness, tracing several rays per pixel. That is the physically correct
+;      look for worn metal, damp floors and grimy panels, and it is per-pixel work - the class the
+;      pinned-40 % test proved free. This is the single most on-taste line restored today.
+r.SSR.Quality=3
+;      MaxRoughness 0.6 -> 0.8 (2026-08-11): grimy and damp floors, worn metal and
+;      painted panels start reflecting instead of only polished surfaces. SSR is
+;      already half-res so this is cheap - it widens WHICH pixels trace, not the res.
+;      MaxRoughness 0.8 -> 0.5 ON 2026-09-08. THIS IS THE "USELESS COST" CUT. MaxRoughness widens
+;      WHICH surfaces trace rays - 0.8 meant grimy floors, worn metal and painted panels all
+;      traced. That was a good buy when SSR was Quality 2 with full-res scene colour. It is not
+;      now: SSR is Quality 1 (few steps per ray) reading a HALF-RES scene colour, so every one of
+;      those extra rough surfaces gets a short, blurry smear instead of a reflection. We were
+;      paying per-pixel ray marches to produce mush on surfaces nobody reads as reflective.
+;      0.5 keeps the genuinely shiny surfaces - polished metal, wet floors, glass - tracing, and
+;      stops paying for the ones where the result was never legible. Back to 0.8 only if
+;      SSR.Quality goes back to 2 as well; these two belong together.
+;      0.5 -> 0.8 ON 2026-09-11. These two always move together: 0.5 was correct while SSR was
+;      Quality 1 reading half-res colour, because rougher surfaces only ever got a blurry smear.
+;      With Quality 3 actually blurring by roughness, widening the range to 0.8 is what lets grimy
+;      floors and painted panels reflect properly instead of only polished metal and glass.
+;      0.8 -> 0.5 ON 2026-09-11. This narrows WHICH surfaces trace rays, not how well they trace,
+;      so r.SSR.Quality stays at 3 and polished metal, wet floors and glass keep their proper
+;      roughness-blurred reflections. What stops reflecting is grimy concrete and painted panels,
+;      where the result was a dim smear nobody reads as a reflection anyway.
+r.SSR.MaxRoughness=0.5
+;      Stencil prepass ON 2026-09-11. A small pass marks every pixel whose roughness is above
+;      MaxRoughness and the SSR pass then skips them with a stencil test instead of running the
+;      ray-march shader and discarding. Epic ship it off because it only pays when most pixels are
+;      excluded - which is this station at MaxRoughness 0.5: rust, grime and painted panels are
+;      nearly everything on screen. Zero visual change by construction; the fade is identical.
+r.SSR.Stencil=1
+;      GLOSSY SSR - OPTION, NOT APPLIED. Quality 1 and 2 are both MIRROR reflections (one ray,
+;      roughness only fades them); 3 is the first level that blurs the reflection by roughness,
+;      four rays per pixel, which is the physically right look for worn metal and damp floors.
+;      Nightdive's own Effects tier 3 ships r.SSR.Quality=3. Priced: roughly four times the SSR
+;      pass, which is half-res pixel work. Keep MaxRoughness at 0.5 if this goes in.
+;r.SSR.Quality=3
+;      HalfResSceneColor 1 -> 0 on 2026-09-07. ADD-BACK QUEUE ITEM 8. This does NOT change
+;      the ray count or the SSR resolution - it only stops the rays reading from a half-res
+;      copy of scene colour, so what the reflection SHOWS stops being a blurred thumbnail.
+;      Pairs directly with MaxRoughness=0.8 above: that widened WHICH surfaces reflect, this
+;      makes what they reflect legible. Mild pixel cost (bigger source texture, worse cache
+;      behaviour per tap, one fewer downsample pass), so it is NOT in the free class.
+;      FIRST of the 2026-09-07 lines to revert if the counter drops.
+;      REVERTED TO 1 ON 2026-09-07. Measured 21 fps with this at 0 alongside the decal line
+;      below, against ~30 before - a 30% loss across the two. This was flagged in this file as
+;      the first thing to revert and it is going back first. Queue item 8 is NOT affordable.
+r.SSR.HalfResSceneColor=1
+r.SSR.Temporal=1
+;      8 -> 10 ON 2026-09-08, a DELIBERATE CUT rather than a revert. The froxel grid is sized in
+;      screen pixels, so 10 instead of 8 is 36% fewer froxels to light every frame - and this
+;      station is full of volumetric fog, so the pass runs constantly. Cost is softer, slightly
+;      chunkier light shafts. This is the biggest real saving left that is not resolution and not
+;      an object-count cut he already paid for. Back to 8 if the shafts read blocky.
+;      10 -> 8 ON 2026-09-11, back to the engine and cooked-tier default, paired with GridSizeZ
+;      below. The fog pass costs pixels x slices and it runs constantly in this station, so it was
+;      cut twice as "the biggest real saving that is not resolution". It was per-pixel work, so the
+;      pinned test says that saving was imaginary. Light shafts and fog banding get their
+;      resolution back, and this station's atmosphere is mostly fog.
+;      8 -> 10 ON 2026-09-11. The froxel grid is sized in screen pixels, so 10 instead of 8 is ~36 %
+;      fewer froxels to light every frame, and fog runs constantly in this station. Paired with the
+;      GridSizeZ 32 cut above, the fog pass is now roughly a third of what it was.
+;      Cost is slightly chunkier light shafts. Back to 8 first if the shafts read blocky.
+;      10 -> 8 ON 2026-09-11, spending part of the margin that dropping to 50 % just bought.
+;      This is the most visible of the cuts made during the hunt: the froxel grid is sized in screen
+;      pixels, and 8 is what keeps light shafts smooth instead of chunky. Volumetric shafts from the
+;      emergency lighting are this game's signature image, so this is the best use of ~1.8 ms.
+;      GridSizeZ stays at 32 - depth slices are the half that does NOT shrink with render
+;      resolution, so they remain the efficient half to leave cut.
+r.VolumetricFog.GridPixelSize=8
+;      GridSizeZ 64 -> 48 ON 2026-09-08, paired with GridPixelSize 10 above. The fog pass costs
+;      pixels x SLICES, so the two multiply: 10px + 48 slices is roughly HALF the froxels of the
+;      8px + 64 it started at. Fog runs constantly in this station, which makes it the largest
+;      saving available that is not resolution. Cost is coarser depth banding in thick fog.
+;      48 -> 64. Deliberately NOT the 128 the cooked tier 3 ships: depth slices are the half of the
+;      froxel count that also costs render-thread setup, and the render thread is the actual limit.
+;      64 is the engine default and restores the depth precision without touching the bottleneck.
+;      64 -> 48 ON 2026-09-11. The froxel count is screen tiles x DEPTH SLICES, and only the screen
+;      tiles shrink with the render fraction - the slice count multiplies the whole grid regardless.
+;      So slices are the fixed half of the fog cost and the right half to cut.
+;      GridPixelSize STAYS AT 8: that is the half that does scale with resolution, and it is what
+;      keeps the light shafts smooth rather than chunky. The two halves are no longer moved
+;      together, which is a correction to this file's earlier advice.
+;      48 -> 32 ON 2026-09-11. Depth slices are the half of the froxel grid that does NOT shrink
+;      with render resolution, so they are the efficient half to cut. GridPixelSize stays at 8,
+;      which is what keeps light shafts smooth rather than chunky - the two halves are deliberately
+;      NOT moved together. The loss is coarser depth banding inside thick fog only.
+r.VolumetricFog.GridSizeZ=32
+;      HistoryMissSupersampleCount 4 -> 8 on 2026-09-11. Only froxels with NO history (turning a
+;      corner, a door opening) take the extra samples, so it costs nothing in a steady view and a
+;      little in the first frame of a disocclusion. What it buys is that the coarser 10/48 grid
+;      stops sparkling for a frame when the camera whips round. Epic's Cine tier uses 16.
+;      8 -> 16 (the cooked Cine value). Paid ONLY by froxels with no history - turning a corner, a
+;      door opening - so a steady view costs nothing. Stops fog sparkling on fast camera turns.
+;      *** 16 -> 4 (THE COOKED TIER VALUE) ON 2026-09-11. THIS IS THE "RUNNING QUICKLY" DIP. ***
+;      It was raised to 16 earlier today and called near-free because it is paid ONLY by froxels
+;      with no history. That is true - and it is exactly why it is the wrong line to have raised:
+;      "no history" means disocclusion, which means turning a corner or SPRINTING DOWN A CORRIDOR.
+;      It costs nothing while standing still and the most precisely when he reports the dip.
+;      Supersampling 16 fog samples for every newly revealed froxel, at a screen-sized grid, is a
+;      large burst exactly during fast movement. 4 is what Nightdive ship; 8 is the middle step if
+;      fog sparkles on fast turns, which is the failure mode to watch for.
+;      BACK TO 16 ON 2026-09-11: dropping it to 4 did NOT change the dips, so the "this is the
+;      running-quickly cost" diagnosis was wrong and the only thing the cut bought was fog sparkling
+;      on fast turns. Restored on the file's own rule that a change which buys nothing must go back.
+r.VolumetricFog.HistoryMissSupersampleCount=16
+;      ---- TRANSLUCENCY AUTO-DOWNSAMPLE - OPTION, NOT APPLIED. Added 2026-09-11. ----
+;      Separate translucency (smoke, sparks, steam, glass, holograms) renders at 100 % of the
+;      render resolution. With AutoDownsample on, the engine times that pass on the GPU and drops
+;      it to half resolution ONLY while it costs more than the threshold, restoring full res once
+;      it is cheap again. That is the definition of cutting cost you cannot see: an explosion is
+;      the one moment nobody can judge smoke resolution. Epic's defaults (1.5 ms down / 0.5 ms
+;      up) are tuned for fast GPUs and would keep this GPU half-res in every steamy room, so the
+;      thresholds below are ~10 % and ~4 % of a 37 ms frame, and the state may change at most
+;      every 3 s so it cannot breathe. Failure mode: smoke visibly softens mid-fight; then delete.
+;      *** REVERTED 2026-09-11, SAME DAY IT WENT IN. It went live with r.DistanceFieldAO=0 and the
+;      pair measured 25 -> 21 fps. DFAO=0 only REMOVES passes, so it cannot be what added cost -
+;      this block is the one that can, and the mechanism is already documented in this file for
+;      r.HZBOcclusion: auto-downsample needs a GPU TIMESTAMP QUERY every frame to decide, and a
+;      GPU-to-CPU round trip is exactly what Prism emulation punishes. The saving it was supposed
+;      to buy is smoke resolution nobody looks at; it was never worth a per-frame stall.
+;      Do NOT re-enable this. If it is ever retried, it must be tested ALONE.
+;r.SeparateTranslucencyAutoDownsample=1
+;r.SeparateTranslucencyDurationDownsampleThreshold=4.0
+;r.SeparateTranslucencyDurationUpsampleThreshold=1.5
+;r.SeparateTranslucencyMinDownsampleChangeTime=3.0
+r.BloomQuality=5
+;      Bloom.Cross added 2026-09-07 at 0.5. Adds a cross/star-shaped kernel to the bloom pass
+;      that already runs, so it is free - a few extra taps, no new pass.
+;      READ THIS BEFORE KEEPING IT: it is in tension with the CLARITY block below, which
+;      deliberately strips lens flare and chromatic fringe to get the Doom 3 / Prey look.
+;      A cross bloom is the same family of camera-artefact effect. It is here because it was
+;      asked for, not because the file's aesthetic argues for it. 0.5 is the subtle setting;
+;      1.0 is the full anamorphic streak off emissive panels and SHODAN screens. Set 0 to
+;      remove - it is the one line here that is pure taste and costs nothing to drop.
+;      0.5 -> 1.0 ON 2026-09-08. FREE - extra taps in a bloom pass that already runs, no new pass.
+;      Full anamorphic streaks off emissive panels and SHODAN screens, and under Auto HDR those
+;      streaks are the part of the frame that gets stretched brightest. Set 0.5 for subtle, 0 off.
+r.Bloom.Cross=1.0
+r.LightShaftQuality=1
+;      One more blur iteration on the light-shaft buffer, which is a small downsampled target, so it
+;      is cheap. Longer, smoother god rays from the emergency lighting - this game's signature image.
+r.LightShaftBlurPasses=4
+;      ---- particle lights, 2026-09-08. Verified registered in the exe. ----
+;      ParticleLightQuality 2 makes sparks, fire, plasma and muzzle flashes cast REAL dynamic
+;      light on the geometry around them instead of only glowing as sprites. In a station this
+;      dark it is the most atmospheric line here: sparks from a broken panel now light the
+;      corridor. Cost is spiky, not constant - only while an effect with a light is on screen.
+;      1 = cheap per-particle approximation, 0 = off.
+;      2 -> 1 ON 2026-09-08 at 25 fps. 1 keeps the per-particle approximation, so sparks and fire
+;      still throw light, at a fraction of the cost of the high-quality path. This is the one
+;      beauty line worth keeping in reduced form rather than switching off.
+;      2 -> 1 ON 2026-09-11. Sparks, fire, plasma and muzzle flashes still cast real light on the
+;      geometry around them - 1 is the per-particle approximation rather than the full path, and 0
+;      would remove the effect entirely. Its cost is spiky by nature: zero in an empty corridor,
+;      large during a firefight, which makes it a floor problem rather than an average one.
+r.ParticleLightQuality=1
+;      EmitterSpawnRateScale 1.0 -> 0.5 on 2026-09-11. Halves how many particles every emitter
+;      spawns - sparks, steam, smoke, blood. Particles are ticked and updated on the CPU before they
+;      are ever drawn, so this cuts game-thread work as well as GPU work, which is why it is in this
+;      block rather than the effects block.
+;      VISIBLE: effects are thinner. 0.75 is the halfway step, 1.0 is stock.
+;      BACK TO 1.0 (STOCK) ON 2026-09-11, same reason: measured no change, so halving the particle
+;      density was a pure loss. Sparks, steam, smoke and blood return to full density.
+r.EmitterSpawnRateScale=1.0
+;      ---- TRANSLUCENCY LIGHTING VOLUME 64 -> 32, 2026-09-11. Verified registered. ----
+;      This is a pair of VOLUME textures covering the view, injected with every nearby dynamic
+;      light every frame, and it exists only so that translucent surfaces and particles - smoke,
+;      steam, sparks, glass, holograms - receive light. The cooked Effects tier ships 64, so it is
+;      64x64x64 x2 voxels of light injection per frame in a station where every light is dynamic
+;      (r.AllowStaticLighting=False), and it is paid whether or not any smoke is on screen.
+;      32 is EIGHT TIMES fewer voxels. What it costs is spatial precision in how a puff of smoke
+;      is lit - a gradient across a smoke cloud gets coarser - on volumes that are blurred and
+;      semi-transparent to begin with. This is the best remaining cost-per-visible-pixel cut.
+;      Note this file once listed 96 under "cut and not worth re-adding"; that was about raising
+;      it. 32 goes the other way. Back to 64 if smoke lighting reads blocky or pops.
+;      32 -> 64, the cooked tier value. A puff of smoke or steam gets a properly resolved lighting
+;      gradient across it instead of a coarse one, and in a station lit entirely by dynamic lights
+;      that is most of the mood.
+r.TranslucencyLightingVolumeDim=64
+;      ---- SEPARATE TRANSLUCENCY AT 50 %, 2026-09-11. Verified registered. ----
+;      This is the DETERMINISTIC version of the auto-downsample that regressed the frame rate
+;      earlier today. That one needed a GPU timestamp query every frame to decide when to act;
+;      this one just renders smoke, steam, sparks, glass and holograms at half the render fraction
+;      always, with no measurement, no timer and no state changes to thrash. Same saving, none of
+;      the mechanism that failed.
+;      HONEST LABEL: this is pixel work, so it SCALES with the render fraction - meaning dynamic
+;      resolution will convert this saving into a sharper picture rather than into frames. It is
+;      in the "cheap beauty" half of this edit, not the "reach 30 fps" half.
+;      Back to 100 if particle edges look steppy against sharp geometry.
+;      BACK TO 100 ON 2026-09-11. It was set to 50 this morning to buy pixel time that the pinned
+;      test proves was never the constraint. Smoke, steam, sparks and holograms render at the full
+;      render fraction again, so particle edges stay as sharp as the geometry behind them.
+;      *** 100 -> 50 ON 2026-09-11, also aimed at the FLOOR. ***
+;      Smoke, steam, sparks, blood mist and holograms render into their own buffer. At 100 % that
+;      buffer costs nothing in an empty corridor and a great deal exactly when the screen fills with
+;      effects - which is precisely when the frame rate dips to 25. Half resolution there is close to
+;      invisible, because a semi-transparent volume has no hard edges to soften.
+;      This is the DETERMINISTIC version of the auto-downsample that regressed the frame rate earlier
+;      today: no GPU timestamp query, no state thrashing, just a fixed fraction.
+r.SeparateTranslucencyScreenPercentage=50
+
+; ---- AO: kept, because it is what darkens the station, but no longer maxed ----
+;      Method 1 = GTAO. Levels 3 -> 1. Compute path is strictly faster than the
+;      pixel-shader path at identical quality (1, not 2: 2 is async compute,
+;      which is not a bet worth taking on Adreno under Prism).
+;      RadiusScale stays 1.0 on purpose - it is not a quality knob, and 1.5
+;      stretches AO past its intended radius, which looks LESS physically
+;      correct, not more.
+r.AmbientOcclusion.Method=1
+r.AmbientOcclusion.Compute=1
+;      Levels 1 -> 2 (2026-08-11): a wider AO radius, so objects sit into the floor
+;      and corners darken properly instead of only tight contact points. Grounding.
+;      RE-APPLIED 2 -> -1, matching the cooked tier. -1 is the engine AUTO setting, not "off".
+;      This was the only line in the file still disagreeing with what Nightdive ship.
+;      -1 (auto) -> 2 on 2026-09-11. Auto picks 3 mip levels at MaxQuality 100; with the budget
+;      halved above, pinning 2 keeps the behaviour predictable and removes a whole level of work.
+;      This reverses today's earlier "match the shipped tier" change, and the reason is a
+;      measurement rather than a preference.
+r.AmbientOcclusionLevels=2
+r.DefaultFeature.AmbientOcclusion=1
+r.AmbientOcclusionRadiusScale=1.0
+;      MaxQuality 100 -> 75 ON 2026-09-08. This is a percentage cap on the AO pass' own work, and
+;      AO is per-pixel. 75 trims it without touching Levels or RadiusScale, so the grounding and
+;      the corner darkening he asked for stay - only the sample budget shrinks.
+;      75 -> 50 on 2026-09-08. AO is per-pixel and this is a straight percentage cap on its
+;      sample budget. With PCSS now producing real contact darkening from the shadow maps, AO is
+;      doing less of the heavy lifting than it was, so its budget is the right place to trim.
+;      Levels, RadiusScale, MipLevelFactor, ThicknessBlend and FalloffEnd all stay.
+;      50 -> 100 (STOCK) ON 2026-09-11. It was trimmed twice, 100 -> 75 -> 50, purely as per-pixel
+;      sample budget - the class the pinned test proved free. Full budget restores the AO's shape
+;      in corners and under small props, which is the grounding that keeps the station solid.
+;      *** 100 -> 50 ON 2026-09-11, AND THIS IS THE ONE THAT MATTERED. ***
+;      The bisect measured AMBIENT OCCLUSION AT 29.6 ms OF AN 83 ms FRAME - more than shadows
+;      (11.5), fog and reflections (14.9) put together, and more than rendering at native
+;      resolution instead of quarter (12.5). It was the single largest cost in the game and it had
+;      been hiding all day because every earlier A/B was too small to show it.
+;      MaxQuality is a straight percentage cap on the AO pass' own sample budget, so this is the
+;      cheapest half of the saving and it costs the least visually.
+r.AmbientOcclusionMaxQuality=50
+r.AmbientOcclusionStaticFraction=1.0
+;      ---- AO detail, 2026-09-08. Both verified registered in the exe. ----
+;      MipLevelFactor 0.5 -> 0.4: AO reads a higher-resolution depth mip, so contact darkening
+;      keeps its shape on small props instead of smearing. GTAO.NumAngles 2 -> 4: twice the sweep
+;      directions, which is what removes the banded streaky look in corners. Cheap because the
+;      GTAO pass already runs at half resolution. Revert NumAngles first.
+r.AmbientOcclusionMipLevelFactor=0.4
+;      NumAngles back to 2 ON 2026-09-08 at 25 fps - third item in the revert order. ThicknessBlend
+;      and FalloffEnd below STAY: they are pass constants and cost literally nothing.
+;      4 -> 2 on 2026-09-11. GTAO cost is roughly linear in sweep directions, so this is the other
+;      half of the AO saving. 2 is the engine default. The loss is a slightly more banded look in
+;      corners, which the ThicknessBlend and FalloffEnd lines below already soften.
+r.GTAO.NumAngles=2
+;      *** HALF-RESOLUTION AO, PINNED EXPLICITLY 2026-09-11. The single biggest line of the fix. ***
+;      This was never set in this file, so GTAO has been running at FULL resolution - 7.4 MPixels,
+;      four sweeps, full sample budget, every frame. That is where the 29.6 ms went.
+;      Downsample=1 runs the pass at half resolution and upscales, which is how UE4 intends GTAO to
+;      be used and is roughly a 4x saving on its own. AO is a soft, low-frequency effect, so half
+;      resolution is very close to invisible - it is the best quality-per-millisecond line in the
+;      entire file.
+r.GTAO.Downsample=1
+;      ThicknessBlend 0.5 -> 0.75 and FalloffEnd 200 -> 250, both 2026-09-08 and both FREE - they
+;      only change constants used inside the GTAO pass. ThicknessBlend higher means less
+;      over-occlusion where GTAO cannot tell how thick an object is, so railings and pipes stop
+;      painting shadow onto surfaces behind them. FalloffEnd wider means AO reaches a little
+;      further, which suits large rooms. Pairs with Auto HDR: cleaner AO means the dark end of
+;      the SDR image has real gradients to stretch instead of mush.
+r.GTAO.ThicknessBlend=0.75
+r.GTAO.FalloffEnd=250
+;      UseNormals 0 -> 1 on 2026-09-11. GTAO derives its surface normal from the depth buffer by
+;      default, which ignores normal maps and produces haloes at hard edges. 1 reads the GBuffer
+;      normal instead, so the occlusion follows the bumps, rivets and grime the materials already
+;      carry. Cost is one extra texture fetch per half-res pixel - nothing measurable.
+r.GTAO.UseNormals=1
+
+; ---- DISTANCE FIELD AO: THE BIGGEST UNMEASURED COST IN THE FRAME. Found 2026-09-11. ----
+;      Nothing in this file ever touched it, so it runs at the engine's Shadow tier 3 values:
+;      r.DistanceFieldAO=1, r.DistanceFieldShadowing=1, r.AOQuality=2. The cooked project
+;      settings (read out of the base pak) say r.GenerateMeshDistanceFields=True and
+;      r.AllowStaticLighting=False - so every light is dynamic, the sky light is Movable, and a
+;      Movable sky light with Cast Shadows gets its occlusion from DFAO. That is a global
+;      distance-field update every frame plus cone tracing at half res. Nobody has measured it.
+;      IT IS PROBABLY VISIBLE: the sky light is the ambient fill (the red-tint mod works by
+;      recolouring it), and DFAO is what stops that fill reaching into every corner. So this is
+;      an A/B, not a blind cut. Two steps, one at a time, counter visible:
+;        1. r.AOQuality=1 - keeps DFAO but traces the global field only, dropping the per-object
+;           field tracing whose close-range work GTAO above already duplicates. Most of the
+;           saving, least of the loss.
+;        2. r.DistanceFieldAO=0 - the whole subsystem off. Tells you its total price; if corners
+;           flatten and the room reads lit-from-everywhere, that is what it was buying.
+;      STEP 1 LIVE 2026-09-11: AOQuality 2 -> 1. Baseline to beat is 23 fps at SP 60.
+r.AOQuality=1
+;      STEP 1 MEASURED 2026-09-11: 23 -> 25 fps, no flattening reported. STEP 2 LIVE the same day:
+;      the whole subsystem off. AOQuality above is now dead but kept so step 1 is one flip away.
+r.DistanceFieldAO=0
+;      *** r.DistanceFieldShadowing=0 ON 2026-09-11 - THE CUT WITH THE WORST COST-TO-BENEFIT RATIO
+;      IN THE FILE, found by scanning the base pak. Exactly FIVE assets set
+;      bUseRayTracedDistanceFieldShadows. Five lights in the whole station were keeping the entire
+;      global distance-field scene alive AND tracing rays against it - and because DFAO above only
+;      stops the AO consumer, that scene was still being maintained every frame for those five.
+;      This is the line that actually ends distance-field work, not the DFAO one.
+;      NOT invisible, and not claimed to be: wherever those five lights are, a soft ray-traced
+;      shadow disappears and the regular shadow map takes over. Five lights is the price.
+;      Back to 1 if a specific room noticeably loses its shadowing.
+r.DistanceFieldShadowing=0
+;      CAPSULE SHADOWS DELIBERATELY NOT CUT. The same scan found bCastCapsuleIndirectShadow set on
+;      21 assets and bCastCapsuleDirectShadow on 1, so Nightdive authored them on the skeletal
+;      meshes - mutants, cyborgs, corpses. That is character grounding, which is exactly the
+;      realism he buys, so r.CapsuleShadows stays at its tier default of 1.
+;      (There is an argument they are already inert - capsule INDIRECT shadows need an indirect
+;      lighting cache and the project ships r.AllowStaticLighting=False - but inert costs nothing
+;      to leave on, and if that argument is wrong the cut would be visible on every character.)
+; ---- FLESH: subsurface scattering. ADD-BACK QUEUE ITEM 4, DONE 2026-09-08. ----
+;      HalfRes 0 renders the subsurface pass at full resolution; Quality 1 picks the high-quality
+;      separable filter. This is what makes mutant skin, burned flesh and the corpses read as
+;      tissue with light passing through rather than painted plastic - the station is bodies, so
+;      it buys more immersion than another 5% of resolution would.
+;      Affordable despite being pixel work: the pass only touches pixels whose material uses a
+;      subsurface shading model - zero in an empty corridor, a small fraction over a body. That
+;      is the opposite of ScreenPercentage, which charges for every pixel every frame.
+;      Revert HalfRes to 1 first if a fight among corpses drops frames.
+;      HalfRes back to 1 and Quality back to -1 (automatic) ON 2026-09-08 at 25 fps. Second item
+;      in the stated revert order. The reasoning that it is nearly free was sound but conditional
+;      on flesh being off screen - a fight in a room of corpses is exactly when frames matter.
+r.SSS.HalfRes=0
+r.SSS.Quality=1
+;      Scale 1.0 -> 1.1 and the Burley model pinned, 2026-09-08. Scale widens the subsurface
+;      radius, so light travels a little further through skin before it comes back out - free,
+;      it is a constant in a pass that already runs, and it is only visible BECAUSE HalfRes is 0
+;      above. Burley is UE4's physically-based subsurface model and Quality 1 / SampleSet 2 are
+;      its high settings; all three are already the 4.27 defaults and are pinned here only so a
+;      future scalability change cannot quietly drop them. Set Scale back to 1.0 if flesh reads
+;      waxy - that is the failure mode, not dullness.
+r.SSS.Scale=1.1
+r.SSS.Burley=1
+r.SSS.Burley.Quality=1
+r.SSS.SampleSet=2
+;      Checkerboard OFF. By default UE4 shades subsurface scattering on a checkerboard of half the
+;      pixels and reconstructs the rest, which is what makes skin read slightly dithered close up.
+;      It only touches pixels using a subsurface material - zero in an empty corridor, a small
+;      fraction over a body - and this station is bodies.
+r.SSS.Checkerboard=0
+
+; ---- SSGI: bounced indirect light. Still OFF. ----
+;      Not a performance decision: 5 crash-reporter sessions across 9-10 Aug
+;      with it enabled. HalfRes/Quality stay so re-enabling is one character.
+r.SSGI.Enable=0
+r.SSGI.HalfRes=1
+r.SSGI.Quality=2
+
+; ---- CAMERA: was the "CLARITY / Doom 3 look" block. ITS PREMISE WAS WRONG. ----
+;      REWRITTEN 2026-09-08. This block was created on 11 August as free performance, dressed up
+;      as an aesthetic. The stated taste that day: realism, cinematic and
+;      immersive is what he wants; comic-book, stylised and pixelated is what he does not. He
+;      also rejected removing r.Bloom.Cross for exactly this reason - an anamorphic streak is a
+;      camera artefact and therefore a FEATURE here.
+;      So these lines are no longer "clarity". They are cinematic effects, priced individually,
+;      and two of them are now ON at his request.
+;      THE UI IS THE ONE EXCEPTION: the HUD has to stay readable, which is what the NoCAUI pak
+;      handles. UI chromatic aberration off, SCENE chromatic aberration on - that is deliberate
+;      and not a contradiction.
+;      What separates those games from a 2023 remake is not colour grading, it
+;      is the absence of modern camera effects that smear the image. Every line
+;      here removes a blur or a glare artefact. Nothing in this block is a
+;      candidate for cutting - it is free performance and better image.
+;      The UI's own chromatic aberration is handled by the NoCAUI pak.
+;      SCENE chromatic aberration ON 2026-09-08 (item 1 of the two he asked for). Nearly free: it
+;      is a few extra taps inside the tonemapper pass that already runs, no new pass and no new
+;      render target. The intensity itself comes from the level's post-process volume, so this
+;      cvar only gates the effect - it restores what the game shipped with rather than adding
+;      anything. Set 0 to remove.
+r.SceneColorFringeQuality=1
+;      MOTION BLUR ON 2026-09-08 at quality 3 (item 2 of the two he asked for). This is the one
+;      with a real price, but it is cheaper here than it looks: TAA already renders a velocity
+;      buffer every frame, so the velocity pass motion blur normally pays for is ALREADY PAID.
+;      What is left is the blur gather itself.
+;      Two reasons it is the right buy at 23 fps: it is the most cinematic effect the engine has,
+;      and it is the only setting that improves PERCEIVED smoothness without improving the frame
+;      rate - a 43 ms frame with motion blur reads far better than a 43 ms frame without it.
+;      Quality 3 of 4; drop to 2 if it costs more than expected, 4 for more samples. The AMOUNT
+;      of blur is a post-process volume property, so it will be whatever Nightdive authored.
+;      DefaultFeature.MotionBlur=1 is what lets the volumes enable it at all - both lines needed.
+;      3 -> 4, the engine maximum and Nightdive's own tier value. More samples along the blur vector,
+;      so fast motion smears smoothly instead of showing discrete ghost steps. At 25 fps motion blur
+;      is still the only setting that improves PERCEIVED smoothness without improving the frame rate.
+r.MotionBlurQuality=4
+r.DefaultFeature.MotionBlur=1
+;      Depth of field and lens flare stay OFF for now - they are items 3 and 4 of the priced list
+;      and he took only 1 and 2. DOF is the most expensive of the four (pure pixel work) and the
+;      least apt in first person; lens flare is moderate. Both are available if he wants them.
+r.DepthOfFieldQuality=0
+r.LensFlareQuality=0
+r.DefaultFeature.LensFlare=0
+;      LENS FLARE - OPTION, NOT APPLIED, 2026-09-11. Cheap: it runs on the bloom downsample chain
+;      at a fraction of the resolution, no new full-res pass. BUT the cooked project settings
+;      carry r.DefaultFeature.LensFlare=False - Nightdive switched it off as a project default,
+;      so turning it on here adds the stock UE4 flare (coloured ghosts, bokeh) rather than
+;      restoring anything they authored. Cinematic by his definition, generic by look; taste call.
+;      Both lines are needed. DOF stays the other shipped effect still off (tier 3 ships it at 2).
+;r.LensFlareQuality=2
+;r.DefaultFeature.LensFlare=1
+; ---- audio: NOTHING TO SET HERE. Verified 2026-08-10 against the shipped exe:
+;      au.MaxChannels is not a registered cvar in this build, and the game cooks
+;      exactly one audio tier (MaxChannels=96), so 96 is the hard mixer ceiling
+;      either way. No spatialization plugin ships, which is correct for
+;      headphones here - Dolby Atmos for Headphones does the HRTF.
+
+; ================================================================
+;  ADD-BACK QUEUE - measured order, best look per frame first.
+;  Add ONE, play, check the counter. Stop when you run out of headroom.
+;
+;  THE MODEL, 2026-09-08. Pixel cost is linear, so fps * ScreenPercentage^2 is a constant K.
+;  The confirmed point is SP 60 -> 27 fps, so K = 27 * 60^2 = 97,000:
+;    SP 60 -> 27    SP 57 -> 30    SP 52 -> 36    SP 48 -> 42    SP 45 -> 48
+;  The 24 fps measured on 2026-09-07 was K = 86,000 - that gap is what the decal line cost.
+;  (The SP 57 -> 32 measurement implies K = 104,000 and disagrees by ~7%. 97,000 is the
+;  conservative fit and it is the one confirmed twice at SP 60.)
+;  With decals back at stock and shadow maps back at 2048, SP 60 should land near 27-29, plus
+;  whatever turning vsync off gives back (at 60 Hz it was quantising frames to 30 or 20).
+;  THIS TABLE IS THE ONLY WAY TO TARGET A SPECIFIC FPS. Every other line in this file is a
+;  guess; this one has measured points behind it. To go past ~30, spend SP - nothing else
+;  in the file has anywhere near that much left in it.
+;
+;   1  r.ScreenPercentage        60 -> 70 -> 80. Still the best looks-per-frame buy;
+;                                resolution beats every detail knob for looks.
+;   2  r.DetailMode              DONE 2026-08-11, now 2
+;   3  r.Shadow.RadiusThreshold  DONE 2026-08-11, now 0.01 (was the biggest
+;                                Doom 3 tell left; 0.0 remains off-limits, it was
+;                                the worst line in the 6-7 fps config)
+;   4  r.SSS.HalfRes             DONE 2026-09-08, now 0 (+ r.SSS.Quality=1)
+;   5  r.Shadow.MaxResolution    REVERTED 2026-09-08, back to 2048 (+ MaxCSMResolution 2048,
+;                                WholeSceneShadowCacheMb 512). Not affordable, and not even
+;                                visible: 4096 maps are ~4 shadow texels per rendered screen
+;                                pixel at ScreenPercentage 60. Do not re-queue it above item 1.
+;   6  r.VolumetricFog.GridPixelSize WENT THE OTHER WAY 2026-09-08: 8 -> 10, and GridSizeZ
+;                                64 -> 48 with it. The fog pass costs pixels x slices, so that is
+;                                roughly half the froxels, and it is what bought 25 -> 27 fps.
+;                                Restoring 8/64 is now a PRICED upgrade, not a queued freebie.
+;   7  r.ViewDistanceScale       DONE 2026-08-27, now 1.5 (revert to 1.0 if the counter drops)
+;   8  r.SSR.HalfResSceneColor   REVERTED 2026-09-07, back to 1. Measured 30% loss. Not
+;                                affordable. SSR.Quality was also cut 2 -> 1 on 2026-09-08.
+;   9  r.Shadow.FilterMethod     DONE 2026-09-08, now 1 (PCSS). THE QUEUE IS NOW EMPTY - every
+;                                item has been applied or measured unaffordable. Tune PCSS with
+;                                r.Shadow.MaxSoftKernelSize before reverting it.
+;
+;  NOT reachable from ini, for the record: film grain. UE4.27 exposes
+;  GrainIntensity only as a post-process volume property, never as a cvar
+;  (r.Tonemapper.GrainQuantization is dither, not grain). Needs a pak mod.
+;
+;  Cut in the reset and NOT worth re-adding:
+;  r.TranslucencyLightingVolumeDim=96, r.SkeletalMeshLODBias=-1,
+;  r.Shadow.PreShadowResolutionFactor=1.0, r.MipMapLODBias=-0.5,
+;  r.Streaming.FullyLoadUsedTextures=1, r.TemporalAACurrentFrameWeight=0.15
+;  (that last one actively fights TAAU - it needs the accumulated history).
+;
+;  2026-09-11 PASS. The exe scan found three more lines that are genuinely free and they are in:
+;  r.SSR.Stencil=1, r.GTAO.UseNormals=1, r.VolumetricFog.HistoryMissSupersampleCount=8. Every
+;  other candidate is priced and sits in this file as a COMMENTED block, ready to flip one at a
+;  time: dynamic resolution (top of file), Gen 5 TAA, glossy SSR, translucency auto-downsample,
+;  the distance-field AO A/B (the biggest unmeasured cost, probably visible) and lens flare.
+;  Rejected after the scan, for the record: r.SceneColorFormat 4 -> 3 (halves scene-colour
+;  bandwidth but forces checkerboard SSS and risks hue banding in exactly the dark gradients Auto
+;  HDR stretches), r.Shadow.TexelsPerPixel (shadow maps already scale with the 60 % render size),
+;  r.TemporalAACatmullRom (a third sharpening layer on top of Sharpen 1.0 and FilterSize 0.9).
+;  Cooked values worth knowing, read from the base pak's BaseScalability/DefaultEngine: tier 3
+;  ships fog 8/128, SSR.Quality 3 with HalfResSceneColor 0, MotionBlurQuality 4, DOF 2,
+;  ShadowQuality 5, RadiusThreshold 0.01; project defaults r.DBuffer=False, r.EarlyZPass=2,
+;  r.DefaultFeature.LensFlare=False, r.TemporalAA.Upsampling=False, r.SSGI.Enable=False.
+; ================================================================
+
+; ---- FOV: CLOSED 2026-08-11. 120 is the hard ceiling. Do not reopen. ----
+; The game cooks AspectRatio_MaintainXFOV (ASCII scan of SystemShock-Windows.pak, hit at
+; offset 12,689,158), which pins the FOV slider to the HORIZONTAL axis - so at 5120x1440
+; the vertical is only 51.9 degrees where a 16:9 player gets 88.5.
+; That is NOT fixable. Proven by a clean single-variable test: setting
+;   [/Script/Engine.LocalPlayer]
+;   AspectRatioAxisConstraint=AspectRatio_MaintainYFOV
+; with RealspaceFOV left at 120 produced NO visible change ("i feeel it like 120 fov").
+; Had it applied, the view would have gone to 161 h / 120 v - unmissable. So ULocalPlayer
+; is not reading this property from the user Engine.ini here; Nightdive set the constraint
+; in code. Section deleted.
+; Nexus has no FOV or aspect mod either - all 110 mods for this game were checked.
+; Remaining levers, for the record: the in-game slider (max 120, already there) and
+; CyberspaceFOV in ShockSettings.sav, which is a SEPARATE value and sits at 89.
+
+[/Script/Engine.UserInterfaceSettings]
+; ---- UI/HUD text scale ----
+; Back to 1.0 (native, 100%) on 2026-08-11 by choice. This is the only
+; text-scaling knob anywhere; the game exposes none of its own.
+; NOTE: keep this section for UUserInterfaceSettings properties ONLY. r.* console
+; variables belong in [SystemSettings] - put them here and UE4 discards them.
+ApplicationScale=1.000000
+;      not use UE4's HDR UI composite path, so no r.HDR.UI.* cvar can reach it.
+;      Nightdive shipped no HDR menu option and never wired that path up.
+;      Use Windows Auto HDR instead (per-app, Settings UI). Do not retry engine HDR.

@@ -1,0 +1,2 @@
+482400	System Shock	-norhithread
+3448280		-dx12 -d3d12 -NoRayTracing
