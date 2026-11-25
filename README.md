@@ -37,15 +37,7 @@ The header of each script says what it changes and how to run it.
 ## Games
 | Script | What it does |
 |---|---|
-| `tunic_aspect.py` | TUNIC at 32:9: patches the aspect-ratio code sites in `GameAssembly.dll` (keeps a vanilla backup). |
-| `risen_hud_center.py` | Risen (2023 64-bit): keeps the 16:9 HUD centred and undistorted on a wider screen. |
-| `risen_focus_text_fix.py` | Risen: correct shape and size of the focus labels and marker on 32:9. |
-| `games/risen-mod-combo/` | Builds one Risen template pack from several mods (templates, monster and sprint tweaks). |
-| `games/gothic-1-remake/g1r_ue4ss_rename.py` | Gothic 1 Remake 1.1: loads UE4SS as `RE4SS.dll` so the game does not block it. |
-| `games/gothic-1-remake/FocusNearbyPickups-ue4ss-shim-main.lua` | Runs the "Highlight All Nearby Items" mod under UE4SS. |
-| `melonloader-portable-net6.ps1` | Gives MelonLoader games a private .NET 6 runtime so the machine-wide one can be removed. |
-| `games/notes/` | Notes per game: ultrawide patches, Unreal Engine 4 `ini` tuning, GPU preference per game, troubleshooting. |
-| `games/settings/` | The settings files in use (Gothic 1 Remake, Overcooked, Risen, System Shock), Steam launch options and the per-game GPU preferences. |
+| `games/notes/` | General notes: Unreal Engine 4 `ini` tuning, GPU preference per game, auditing Nexus mods. |
 
 The Overcooked! All You Can Eat ultrawide mod lives in its own repository:
 [OvercookedAYCE-Ultrawide-Mod](https://github.com/fiodortretyakov/OvercookedAYCE-Ultrawide-Mod).
