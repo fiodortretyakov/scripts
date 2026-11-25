@@ -521,7 +521,10 @@ $ideCpuState = @{ procs = $ideCheck.procs; at = $ideCheck.at; strikes = $ideChec
 #    hours. The transcript is on disk and resumable; only the live context goes.
 # git fsmonitor--daemon is detached by design and never in the list. taskkill /T /F, not
 # Stop-Process: the msys binaries ignore Stop-Process and it takes the children too.
-$SWEEP_ACTIVE_CORE_PCT = 2.0
+# 5 %, not 2 % (25 November 2026): idle tabs now burn 0.6-2.0 % of a core, so 2 % let some look
+# active at random; any build, test or real tool run is far above 5 %.
+$SWEEP_ACTIVE_CORE_PCT = 5.0
+$SWEEP_CLAUDE_SESSIONS = Join-Path $(if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }) 'sessions'
 $SWEEP_ORPHAN_NAMES = @('claude.exe', 'gopls.exe', 'find.exe', 'grep.exe', 'tail.exe', 'head.exe', 'bash.exe', 'actionlint.exe')
 function Get-TreeCpuSeconds([int]$rootId, $byId, $kids) {
     $sum = 0.0
@@ -580,16 +583,37 @@ function Invoke-AgentSweep($prevIdle, [double]$idleHours) {
         $lastActive = $nowT
         if ($prev -and $prev.started -eq $started) {
             $lastActive = [datetime]$prev.lastActive
-            # An idle IDE session still burns 0.4-0.9 % of a core (measured 2 October 2026: 0.38-0.92
-            # CPU-s per 100 s), so the old fixed 1 CPU-second per ~2-min sample kept all 18 open
-            # sessions "active" forever. Active now means above $SWEEP_ACTIVE_CORE_PCT of one core since
-            # the last sample. After a gap (standby, skipped runs) a rate is diluted, so the old
-            # 1-second rule still applies there: the change can only make the sweep kill later, never sooner.
+            # An idle IDE session still burns CPU (2 October 2026: 0.4-0.9 % of a core), so a fixed
+            # 1 CPU-second per sample kept every open session "active" forever. Active means above
+            # $SWEEP_ACTIVE_CORE_PCT of one core since the last sample.
+            # 25 November 2026: after a gap over 900 s (standby, a stuck or skipped run) the old rule
+            # still said ">= 1 CPU-second = active", but an idle tab burns 5-18 CPU-s per 15 min, so
+            # every wake restarted the clock of every idle tab (three tabs idle 45-80 min survived a
+            # 0.25 h limit). A gap now pauses the clock instead: never sooner than wall-clock idle,
+            # never a reset.
             $delta = $cpu - [double]$prev.cpu
             $dt = 300.0
             if ($prev.at) { $dt = ($nowT - [datetime]$prev.at).TotalSeconds }
-            if (($dt -gt 900 -and $delta -ge 1.0) -or ($dt -gt 0 -and $delta / $dt * 100 -ge $SWEEP_ACTIVE_CORE_PCT)) { $lastActive = $nowT }
+            if ($dt -gt 0 -and $delta / $dt * 100 -ge $SWEEP_ACTIVE_CORE_PCT) { $lastActive = $nowT }
+            elseif ($dt -gt 900) { $lastActive = $lastActive.AddSeconds($dt - 300) }
         }
+        # 20 November 2026: a session waiting on a long model stream (one Fable turn ran 1.9 h) burns
+        # under 2 % of a core, so the CPU rule called it idle and killed it mid-turn, with two background
+        # agents. Claude Code writes sessions\<pid>.json with status busy/idle: never kill a busy one,
+        # and count idle time from the last status change. No file (older CLI): CPU rule only.
+        $busy = $false
+        $sf = Join-Path $SWEEP_CLAUDE_SESSIONS ("{0}.json" -f $p.ProcessId)
+        if (Test-Path -LiteralPath $sf) {
+            try {
+                $sj = Get-Content -LiteralPath $sf -Raw -ErrorAction Stop | ConvertFrom-Json
+                if ($sj.status -ne 'idle') { $busy = $true }
+                elseif ($sj.statusUpdatedAt) {
+                    $changed = [DateTimeOffset]::FromUnixTimeMilliseconds([long]$sj.statusUpdatedAt).LocalDateTime
+                    if ($changed -gt $lastActive) { $lastActive = $changed }
+                }
+            } catch { $busy = $true }
+        }
+        if ($busy) { $lastActive = $nowT }
         $idleH = ($nowT - $lastActive).TotalHours
         if ($idleHours -gt 0 -and $idleH -ge $idleHours) {
             Kill-Tree $p ("idle session, no CPU in its process tree for {0:N1} h (limit {1} h), started {2}" -f $idleH, $idleHours, $p.CreationDate.ToString('HH:mm'))
