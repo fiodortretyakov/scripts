@@ -24,16 +24,7 @@ The header of each script says what it changes and how to run it.
 |---|---|
 | `sweeps/clean-temp.ps1` | Deletes temp files that nothing can still use. |
 | `sweeps/set-build-priority.ps1` | Makes the Go toolchain and Java yield CPU, disk and memory to the foreground (IFEO `PerfOptions`). |
-| `sweeps/remove-windows-ai-workloads.ps1` | Switches the Windows AI runtime off and removes its model packages. |
-| `sweeps/remove-extra-local-users.ps1` | Removes every extra local account with its profile and scheduled tasks. |
-| `sweeps/fix-winget-daily-wsl-update.ps1` | Lets a daily winget task keep WSL up to date under Administrator protection. |
 | `sweeps/test-home-latency.ps1` | Measures latency to the Wi-Fi point, the mesh root and the internet, optionally under load. |
-| `sweeps/set-vulkan-native-driver.ps1` | Makes Vulkan programs use the native Qualcomm driver instead of the Direct3D 12 translation layer. |
-| `sweeps/enable-game-bar-recording.ps1` | Turns Game Bar recording back on (machine policy and user keys). |
-| `sweeps/restore-xbox.ps1` | Restores the Xbox parts that Microsoft Store games need: sign-in, cloud saves, multiplayer, Game Bar. |
-| `sweeps/prepare-games-2026-11-06.ps1` | Prepares the laptop for four games (everything except Steam and the games themselves). |
-| `sweeps/uninstall-epic-games-launcher.ps1` | Uninstalls the Epic Games Launcher and what its uninstaller leaves behind. |
-| `sweeps/remove-epic-uninstall-keys.ps1` | Removes only the "Installed apps" registry entries of the Epic Games Launcher. |
 
 ## Claude Code
 | Script | What it does |
@@ -42,7 +33,6 @@ The header of each script says what it changes and how to run it.
 | `claude-notion-read-only.ps1` | PreToolUse hook: keeps every Notion MCP connection read-only, except for comments. |
 | `claude/plugins/` | Local plugin marketplace with `gopls-tuned` and `pwsh-tuned`: the Go and PowerShell language servers with the style analyzers off. |
 | `claude/output-styles/concise-correct.md` | Output style: short answers in full, correct sentences. |
-| `sweeps/set-claude-effort-default.ps1` | Removes the machine variable that overrides the effort level of `settings.json`. |
 
 ## Games
 | Script | What it does |
