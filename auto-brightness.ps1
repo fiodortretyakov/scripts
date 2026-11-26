@@ -524,6 +524,7 @@ $ideCpuState = @{ procs = $ideCheck.procs; at = $ideCheck.at; strikes = $ideChec
 # 5 %, not 2 % (25 November 2026): idle tabs now burn 0.6-2.0 % of a core, so 2 % let some look
 # active at random; any build, test or real tool run is far above 5 %.
 $SWEEP_ACTIVE_CORE_PCT = 5.0
+$SWEEP_IDLE_STATUS_CAP_H = 1.0
 $SWEEP_CLAUDE_SESSIONS = Join-Path $(if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $HOME '.claude' }) 'sessions'
 $SWEEP_ORPHAN_NAMES = @('claude.exe', 'gopls.exe', 'find.exe', 'grep.exe', 'tail.exe', 'head.exe', 'bash.exe', 'actionlint.exe')
 function Get-TreeCpuSeconds([int]$rootId, $byId, $kids) {
@@ -559,7 +560,10 @@ function Invoke-AgentSweep($prevIdle, [double]$idleHours) {
     }
     $me = $PID
     foreach ($p in $all) {
-        if ($SWEEP_ORPHAN_NAMES -notcontains $p.Name) { continue }
+        # 26 November 2026: the PowerShell LSP host of the pwsh-tuned plugin outlived its session
+        # (orphan since 00:09, found at 14:31); only that command line, never his own pwsh shells.
+        $isPses = $p.Name -eq 'pwsh.exe' -and $p.CommandLine -match 'start-pses\.ps1'
+        if ($SWEEP_ORPHAN_NAMES -notcontains $p.Name -and -not $isPses) { continue }
         if ([int]$p.ProcessId -eq $me) { continue }
         if ($byId.ContainsKey([int]$p.ParentProcessId)) { continue }
         # Age floor, added 2026-09-02: Claude Code detaches Bash-tool background work on
@@ -602,6 +606,7 @@ function Invoke-AgentSweep($prevIdle, [double]$idleHours) {
         # agents. Claude Code writes sessions\<pid>.json with status busy/idle: never kill a busy one,
         # and count idle time from the last status change. No file (older CLI): CPU rule only.
         $busy = $false
+        $changed = $null
         $sf = Join-Path $SWEEP_CLAUDE_SESSIONS ("{0}.json" -f $p.ProcessId)
         if (Test-Path -LiteralPath $sf) {
             try {
@@ -614,6 +619,16 @@ function Invoke-AgentSweep($prevIdle, [double]$idleHours) {
             } catch { $busy = $true }
         }
         if ($busy) { $lastActive = $nowT }
+        # 26 November 2026: a session idle since 13:04 survived to 14:31 because a background shell
+        # command under it kept its tree above 5 % of a core. Status idle for $SWEEP_IDLE_STATUS_CAP_H
+        # (or the idle limit, if longer) = close it, whatever its children burn.
+        if (-not $busy -and $changed -and $idleHours -gt 0) {
+            $statusIdleH = ($nowT - $changed).TotalHours
+            if ($statusIdleH -ge [math]::Max($idleHours, $SWEEP_IDLE_STATUS_CAP_H)) {
+                Kill-Tree $p ("session idle by status for {0:N1} h (cap {1} h) with a busy process tree, started {2}" -f $statusIdleH, $SWEEP_IDLE_STATUS_CAP_H, $p.CreationDate.ToString('HH:mm'))
+                continue
+            }
+        }
         $idleH = ($nowT - $lastActive).TotalHours
         if ($idleHours -gt 0 -and $idleH -ge $idleHours) {
             Kill-Tree $p ("idle session, no CPU in its process tree for {0:N1} h (limit {1} h), started {2}" -f $idleH, $idleHours, $p.CreationDate.ToString('HH:mm'))
