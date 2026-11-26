@@ -16,6 +16,7 @@
 !/games/
 !/code-workspace.ps1
 !/claude-notion-read-only.ps1
+!/freeagent-tax-check.ps1
 !/claude/
 # sweeps\ holds one-off machine scripts; only the ones named here are public.
 !/sweeps/

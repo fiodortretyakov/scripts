@@ -16,6 +16,7 @@ library location are set at the top of each script.
 | `python3.bat` | `python3` shim for cmd and PowerShell. |
 | `ide-reload-extension/` | VS Code extension that reloads the window when `auto-brightness.ps1` requests it. |
 | `code-workspace.ps1` | Builds one VS Code workspace file: a main folder first, then every git repository under a second folder. Dry run by default. |
+| `freeagent-tax-check.ps1` | Read-only FreeAgent export (GET only after OAuth) to JSON for tax checks. Credentials stay DPAPI-encrypted outside the repository; `-Setup` once. |
 
 ## One-off machine changes
 The header of each script says what it changes and how to run it.
