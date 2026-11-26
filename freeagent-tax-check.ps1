@@ -166,6 +166,11 @@ if ($me -and $me.PSObject.Properties['user']) {
     $null = Export-FreeAgentResource 'self_assessment_returns' "$($me.user.url)/self_assessment_returns" 'self_assessment_returns'
 }
 
+# Payroll years are named by the calendar year the tax year ends in (2027 = 2026/27).
+for ($year = $From.Year; $year -le $To.Year + 1; $year++) {
+    $null = Export-FreeAgentResource "payroll_$year" "payroll/$year"
+}
+
 $accounts = Export-FreeAgentResource 'bank_accounts' 'bank_accounts' 'bank_accounts'
 foreach ($account in @($accounts | Where-Object { $_ })) {
     $id = ($account.url -split '/')[-1]
