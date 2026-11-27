@@ -10,6 +10,7 @@ library location are set at the top of each script.
 | `auto-brightness.ps1` | Sets the G95NC brightness over DDC/CI from the laptop's ambient light sensor (smoothed, with a calibration curve). Windows PowerShell 5.1. |
 | `run-hidden.ps1` | Runs a program from Task Scheduler with no window (`conhost --headless`) and passes its exit code on. |
 | `screen-dim.ps1` | Software dimming per display through the GDI gamma ramp. |
+| `fix-panel-brightness.ps1` | Recovers a Surface Laptop 7 panel backlight stuck at maximum after a restart (clean display off/on cycles) and traces the Surface display drivers to show why the TCON setup failed. Manual only. |
 | `pc.ps1` | One entry point for the above: status, display profiles, charger health, scheduled tasks. |
 | `netusage-hourly.ps1` | Network usage per app and per hour from the Windows data-usage store. Windows PowerShell 5.1. |
 | `single-instance.ps1` | Lock helper so a scheduled script never runs twice at once. |

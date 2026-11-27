@@ -7,6 +7,7 @@
 !/auto-brightness.ps1
 !/claude-subagent-model.ps1
 !/run-hidden.ps1
+!/fix-panel-brightness.ps1
 !/netusage-hourly.ps1
 !/pc.ps1
 !/python3.bat
