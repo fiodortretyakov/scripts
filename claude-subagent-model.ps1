@@ -14,7 +14,7 @@ Setup, in the Claude Code user settings.json:
     "args": ["-NoLogo", "-NoProfile", "-NonInteractive", "-File", "D:\\bin\\claude-subagent-model.ps1"],
     "timeout": 15 } ] } ] }
 and a CLAUDE.md line such as: "Every Agent call names model and effort: haiku low for lookups; sonnet low or medium
-for log reading and mechanical edits; opus medium or high for implementation and reviews; fable high for the hardest
+for log reading and mechanical edits; sonnet medium for implementation; opus high for reviews; fable high for the hardest
 work." The Agent tool sets effort only when instructions ask for it, so the CLAUDE.md line is required.
 
 Test: '{"tool_name":"Agent","tool_input":{"description":"x","prompt":"y","model":"sonnet"}}' | pwsh -NoProfile -File D:\bin\claude-subagent-model.ps1
@@ -23,7 +23,7 @@ param(
     # Models Claude may pick for a subagent; a comma-separated string also works.
     [string[]]$Allow = @('fable', 'opus', 'sonnet', 'haiku'),
     # Available memory (GB) a new subagent needs; 0 turns the check off.
-    [double]$MinAvailableGB = 8
+    [double]$MinAvailableGB = 0
 )
 
 $allowed = @($Allow | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
@@ -60,7 +60,8 @@ if (-not $problems) { exit 0 }
 $reason = "Subagent call refused by D:\bin\claude-subagent-model.ps1: $($problems -join ' and '). Issue it again " +
     "with model ($($allowed -join ', ')) and effort (low, medium, high, xhigh, max) chosen for this task at the " +
     "fewest tokens: haiku low for pure lookups and searches; sonnet low/medium for log reading, summaries and " +
-    "mechanical edits; opus medium/high for implementation, tests and reviews; fable high for the hardest work."
+    "mechanical edits; sonnet medium for implementation and tests; opus high for reviews or after sonnet failed; " +
+    "fable high for the hardest work."
 $decision = @{ hookEventName = 'PreToolUse'; permissionDecision = 'deny'; permissionDecisionReason = $reason }
 [Console]::Out.Write((@{ hookSpecificOutput = $decision } | ConvertTo-Json -Compress -Depth 3))
 exit 0
