@@ -32,6 +32,9 @@
   Records the next boot with a one-shot ETW boot logger. The next normal run collects it and removes the logger.
 .PARAMETER DisarmBootTrace
   Removes the boot logger without collecting.
+.PARAMETER AtLogon
+  Used by the logon task: waits 20 s for the desktop, traces only until two runs with the fault are recorded,
+  and keeps the window open when the brightness is still stuck.
 .PARAMETER Decode
   Decodes an existing .etl of these drivers and prints its timeline.
 
@@ -50,6 +53,7 @@ param(
     [switch]$SelfTest,
     [switch]$ArmBootTrace,
     [switch]$DisarmBootTrace,
+    [switch]$AtLogon,
     [string]$Decode,
     [Parameter(DontShow)][string]$RunDir,     # set by the unelevated parent for the elevated child
     [Parameter(DontShow)][string]$UserSid     # the invoking user, for the ACL grant on the run folder
@@ -624,6 +628,16 @@ $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $elevated = ([Security.Principal.WindowsPrincipal]$identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $mode = if ($ArmBootTrace) { 'arm' } elseif ($DisarmBootTrace) { 'disarm' } else { 'fix' }
 $isParent = -not $RunDir
+if ($AtLogon -and $isParent) {
+    Write-Host 'Panel brightness check after sign-in: starts in 20 s. Close this window to skip it.' -ForegroundColor Cyan
+    Start-Sleep -Seconds 20      # let the desktop and the display drivers settle after sign-in
+    # Two traced runs that met the fault are enough for the diagnosis; later logons skip the UAC prompt.
+    $traced = @(Get-ChildItem -LiteralPath $DataRoot -Directory -ErrorAction SilentlyContinue | Where-Object {
+            (Test-Path -LiteralPath (Join-Path $_.FullName 'baseline.etl')) -and
+            (Select-String -LiteralPath (Join-Path $_.FullName 'run.log') -Pattern 'RESULT: (fixed in cycle|still stuck)' -Quiet -ErrorAction SilentlyContinue)
+        }).Count
+    if ($traced -ge 2) { $NoTrace = [switch]$true }
+}
 if ($isParent) { $RunDir = Join-Path $DataRoot (Get-Date -Format 'yyyyMMdd-HHmmss') }
 New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
 $LogFile = Join-Path $RunDir 'run.log'
@@ -642,6 +656,7 @@ if ($isParent -and -not $elevated -and ($mode -ne 'fix' -or -not $NoTrace)) {
         $lines | Where-Object { $_ -notmatch '^\S+   \| ' }
         $code = if (($lines -join "`n") -match '(?m)\| exit code (\d+)\s*$') { [int]$Matches[1] } else { 3 }
         Write-Host "Full log: $LogFile"
+        if ($AtLogon -and $code -ne 0) { [void](Read-Host 'Press Enter to close') }
         exit $code
     }
     if ($mode -ne 'fix') { exit 3 }
@@ -675,4 +690,5 @@ try {
     if ($elevated -and $UserSid) { & icacls.exe $RunDir /grant "*${UserSid}:(OI)(CI)M" /T /C /Q *> $null }
 }
 if ($isParent) { Write-Host "Full log: $LogFile" }
+if ($AtLogon -and $isParent -and $Result -ne 0) { [void](Read-Host 'Press Enter to close') }
 exit $Result
